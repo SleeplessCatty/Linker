@@ -1,0 +1,20 @@
+[package]
+name = "qsync-daemon"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "qsyncd"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+fs2.workspace = true
+notify.workspace = true
+qsync-core = { path = "../qsync-core" }
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true

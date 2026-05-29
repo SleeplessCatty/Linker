@@ -1,0 +1,60 @@
+use std::path::PathBuf;
+
+#[derive(Debug, thiserror::Error)]
+pub enum QsyncError {
+    #[error("home directory could not be resolved")]
+    HomeDirMissing,
+
+    #[error("path does not exist: {0}")]
+    PathMissing(PathBuf),
+
+    #[error("path is not a directory: {0}")]
+    NotDirectory(PathBuf),
+
+    #[error("path is not a file: {0}")]
+    NotFile(PathBuf),
+
+    #[error("iCloud Drive folder was not found at: {0}")]
+    IcloudMissing(PathBuf),
+
+    #[error("item already exists: {0}")]
+    ItemExists(String),
+
+    #[error("item was not found: {0}")]
+    ItemNotFound(String),
+
+    #[error("invalid item name for path: {0}")]
+    InvalidItemName(PathBuf),
+
+    #[error("invalid item name: {0}")]
+    InvalidName(String),
+
+    #[error("invalid rule pattern: {0}")]
+    InvalidRulePattern(String),
+
+    #[error("{0}")]
+    NotImplemented(String),
+
+    #[error("rule pattern failed: {0}")]
+    Rule(String),
+
+    #[error("failed to strip path prefix: {0}")]
+    StripPrefix(String),
+
+    #[error("unsupported file timestamp: {0}")]
+    Timestamp(String),
+
+    #[error(transparent)]
+    Walkdir(#[from] walkdir::Error),
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    #[error(transparent)]
+    Sql(#[from] rusqlite::Error),
+
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+}
+
+pub type Result<T> = std::result::Result<T, QsyncError>;

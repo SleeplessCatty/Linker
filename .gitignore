@@ -1,0 +1,17 @@
+.DS_Store
+target/
+
+# Editor and local environment
+.vscode/
+.idea/
+*.swp
+*.tmp
+.env
+.env.*
+
+# Local runtime state should live under ~/Library/Application Support/QuickSync,
+# but keep these ignored if tests create temporary local state.
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log

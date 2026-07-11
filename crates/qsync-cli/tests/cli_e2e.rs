@@ -93,8 +93,8 @@ fn add_list_status_and_remove_item_keep_source_and_target() {
         .arg("list")
         .assert()
         .success()
-        .stdout(pred_contains("=== demo ==="))
-        .stdout(pred_contains("demo"))
+        .stdout(pred_contains("----------------------------------------"))
+        .stdout(pred_contains("name: demo"))
         .stdout(pred_contains("directory"))
         .stdout(pred_contains("status: active"))
         .stdout(pred_contains("source:"))
@@ -160,9 +160,9 @@ fn list_separates_multiple_items_and_emphasizes_names() {
         .arg("list")
         .assert()
         .success()
-        .stdout(pred_contains("=== alpha ==="))
         .stdout(pred_contains("----------------------------------------"))
-        .stdout(pred_contains("=== beta ==="))
+        .stdout(pred_contains("name: alpha"))
+        .stdout(pred_contains("name: beta"))
         .stdout(pred_contains("target:"));
 }
 

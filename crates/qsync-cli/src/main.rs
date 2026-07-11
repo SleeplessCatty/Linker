@@ -207,11 +207,9 @@ fn run() -> Result<()> {
             if items.is_empty() {
                 println!("no items");
             } else {
-                for (index, item) in items.iter().enumerate() {
-                    if index > 0 {
-                        println!("----------------------------------------");
-                    }
-                    println!("=== {} ===", item.name);
+                for item in items {
+                    println!("----------------------------------------");
+                    println!("name: {}", item.name);
                     println!("type: {}", item.item_type);
                     println!("status: {}", item.status);
                     println!("source: {}", item.local_path);

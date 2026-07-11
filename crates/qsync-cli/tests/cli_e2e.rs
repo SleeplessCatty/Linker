@@ -95,7 +95,10 @@ fn add_list_status_and_remove_item_keep_source_and_target() {
         .success()
         .stdout(pred_contains("demo"))
         .stdout(pred_contains("directory"))
-        .stdout(pred_contains(source.to_str().unwrap()));
+        .stdout(pred_contains("source:"))
+        .stdout(pred_contains(source.to_str().unwrap()))
+        .stdout(pred_contains("target:"))
+        .stdout(pred_contains(sandbox.item_path("demo").to_str().unwrap()));
 
     sandbox
         .qs()

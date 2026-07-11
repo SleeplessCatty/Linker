@@ -210,12 +210,12 @@ fn run() -> Result<()> {
             if items.is_empty() {
                 println!("no items");
             } else {
-                println!("{:<24} {:<10} {:<10} SOURCE PATH", "NAME", "TYPE", "STATUS");
                 for item in items {
-                    println!(
-                        "{:<24} {:<10} {:<10} {}",
-                        item.name, item.item_type, item.status, item.local_path
-                    );
+                    println!("name: {}", item.name);
+                    println!("type: {}", item.item_type);
+                    println!("status: {}", item.status);
+                    println!("source: {}", item.local_path);
+                    println!("target: {}", item.cloud_path);
                 }
             }
         }

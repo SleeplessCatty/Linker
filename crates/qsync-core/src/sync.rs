@@ -453,7 +453,7 @@ mod tests {
 
     use super::sync_item;
     use crate::rules::Rule;
-    use crate::state::StateDb;
+    use crate::state::{NewItem, StateDb};
 
     struct Fixture {
         _tmp: TempDir,
@@ -476,15 +476,18 @@ mod tests {
             let db_path = tmp.path().join("state.sqlite");
             let mut db = StateDb::open(&db_path).expect("db");
             let id = Uuid::new_v4().to_string();
-            db.insert_item(
-                &id,
-                "demo",
-                "directory",
-                &local.to_string_lossy(),
-                &cloud.to_string_lossy(),
-                &rule_path.to_string_lossy(),
-                &rules,
-            )
+            let local_path = local.to_string_lossy();
+            let cloud_path = cloud.to_string_lossy();
+            let rule_path = rule_path.to_string_lossy();
+            db.insert_item(NewItem {
+                id: &id,
+                name: "demo",
+                item_type: "directory",
+                local_path: &local_path,
+                cloud_path: &cloud_path,
+                rule_path: &rule_path,
+                rules: &rules,
+            })
             .expect("insert item");
             let item = db.get_item("demo").expect("item");
 
@@ -579,15 +582,18 @@ mod tests {
         let db_path = tmp.path().join("state.sqlite");
         let mut db = StateDb::open(&db_path).expect("db");
         let id = Uuid::new_v4().to_string();
-        db.insert_item(
-            &id,
-            "note.md",
-            "file",
-            &local.to_string_lossy(),
-            &cloud.to_string_lossy(),
-            &rule_path.to_string_lossy(),
-            &[],
-        )
+        let local_path = local.to_string_lossy();
+        let cloud_path = cloud.to_string_lossy();
+        let rule_path = rule_path.to_string_lossy();
+        db.insert_item(NewItem {
+            id: &id,
+            name: "note.md",
+            item_type: "file",
+            local_path: &local_path,
+            cloud_path: &cloud_path,
+            rule_path: &rule_path,
+            rules: &[],
+        })
         .expect("insert item");
         let item = db.get_item("note.md").expect("item");
 

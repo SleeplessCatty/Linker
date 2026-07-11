@@ -13,24 +13,31 @@ pub struct Manifest {
     pub name: String,
     #[serde(rename = "type")]
     pub item_type: String,
-    pub local_path_hint: String,
-    pub item_path: String,
+    pub source_path: String,
+    pub target_path: String,
     pub rule_path: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 impl Manifest {
-    pub fn new(id: String, name: String, item_type: String, local_path_hint: String) -> Self {
+    pub fn new(
+        id: String,
+        name: String,
+        item_type: String,
+        source_path: String,
+        target_path: String,
+        rule_path: String,
+    ) -> Self {
         let now = Utc::now();
         Self {
             schema_version: 1,
             id: id.clone(),
-            item_path: name.clone(),
-            rule_path: format!(".quicksync/rules/{name}.ignore"),
             name,
             item_type,
-            local_path_hint,
+            source_path,
+            target_path,
+            rule_path,
             created_at: now,
             updated_at: now,
         }

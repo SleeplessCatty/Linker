@@ -14,9 +14,6 @@ pub enum QsyncError {
     #[error("path is not a file: {0}")]
     NotFile(PathBuf),
 
-    #[error("iCloud Drive folder was not found at: {0}")]
-    IcloudMissing(PathBuf),
-
     #[error("item already exists: {0}")]
     ItemExists(String),
 
@@ -32,8 +29,8 @@ pub enum QsyncError {
     #[error("invalid rule pattern: {0}")]
     InvalidRulePattern(String),
 
-    #[error("{0}")]
-    NotImplemented(String),
+    #[error("invalid sync association: {0}")]
+    InvalidAssociation(String),
 
     #[error("rule pattern failed: {0}")]
     Rule(String),

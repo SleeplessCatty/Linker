@@ -34,7 +34,7 @@ Do not commit generated or machine-local files:
 - local logs
 - installed binaries under `~/Library/Application Support/QuickSync/bin/`
 - runtime state under `~/Library/Application Support/QuickSync/`
-- user iCloud sync content under `~/Library/Mobile Documents/com~apple~CloudDocs/QuickSync/`
+- user sync content under source directories and target parent directories
 
 ## Pre-Push Checklist
 

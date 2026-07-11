@@ -4,22 +4,22 @@ use qsync_core::ops::{self, AddOptions};
 use qsync_core::{QsyncError, Result};
 
 #[derive(Debug, Parser)]
-#[command(name = "qsync")]
+#[command(name = "qs")]
 #[command(version)]
 #[command(about = "Lightweight iCloud-backed selective sync for macOS")]
 #[command(
-    long_about = "QuickSync mirrors selected local files or folders into iCloud Drive/QuickSync using readable names. Metadata is stored under QuickSync/.quicksync, while synced content stays directly visible for mobile editing."
+    long_about = "QuickSync links one source directory to one target parent directory. The target directory is created as <target-parent>/<source-directory-name>, and the source directory name is used as the item name for sync, rules, remove, and delete."
 )]
 #[command(after_help = "Common workflow:
-  qsync add ~/Documents/Notes
-  qsync rule Notes exclude tmp/
-  qsync sync Notes
-  qsync status Notes
+  qs add ~/Documents/Notes ~/Library/Mobile\\ Documents/com~apple~CloudDocs
+  qs rule Notes exclude tmp/
+  qs sync Notes
+  qs status Notes
 
 Important:
-  remove keeps cloud files and hidden metadata.
-  delete removes cloud files and hidden metadata.
-  Local original files are never deleted by remove or delete.")]
+  remove stops tracking but keeps both source and target directories.
+  delete stops tracking and deletes the target directory.
+  The source directory is never deleted by remove or delete.")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -27,25 +27,19 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    #[command(about = "Add a local file or folder to QuickSync")]
+    #[command(about = "Add a source directory to QuickSync")]
     #[command(
-        long_about = "Add a local file or folder to QuickSync, create its visible iCloud copy under QuickSync/<name>, create hidden metadata under QuickSync/.quicksync, and run the initial sync.\n\nBy default no files are excluded. QuickSync does not import .gitignore unless you explicitly pass it through --ignore-file."
+        long_about = "Add a source directory to QuickSync, create or reuse the target directory at <target-parent-directory>/<source-directory-name>, and run the initial bidirectional sync.\n\nBy default no files are excluded. QuickSync does not import .gitignore unless you explicitly pass it through --ignore-file."
     )]
     #[command(after_help = "Examples:
-  qsync add ~/Documents/Notes
-  qsync add ~/Documents/todo.md
-  qsync add ~/code/demo --name WorkDemo
-  qsync add ~/code/demo --ignore-file ~/code/demo/.qsyncignore
-  qsync add ~/code/demo --exclude node_modules/ --exclude dist/")]
+  qs add ~/Documents/Notes ~/Library/Mobile\\ Documents/com~apple~CloudDocs
+  qs add ~/code/demo ~/Library/Mobile\\ Documents/com~apple~CloudDocs --ignore-file ~/code/demo/.qsyncignore
+  qs add ~/code/demo ~/Library/Mobile\\ Documents/com~apple~CloudDocs --exclude node_modules/ --exclude dist/")]
     Add {
-        #[arg(help = "Local file or folder to sync")]
-        path: String,
-        #[arg(
-            long,
-            help = "Visible iCloud name under QuickSync/",
-            long_help = "Visible iCloud name under QuickSync/. Defaults to the local file or folder name. Names must be unique and cannot contain path separators. .quicksync is reserved."
-        )]
-        name: Option<String>,
+        #[arg(help = "Source directory to sync")]
+        source_directory: String,
+        #[arg(help = "Parent directory where the target directory will be created")]
+        target_parent_directory: String,
         #[arg(
             long = "exclude",
             help = "Add an initial gitignore-style exclude pattern",
@@ -61,12 +55,12 @@ enum Command {
     },
     #[command(about = "List, exclude, or include paths for an item")]
     #[command(
-        long_about = "Manage gitignore-style exclude rules for a synced item. Rules are stored in QuickSync/.quicksync/rules/<name>.ignore and use the same matching semantics as Git ignore files. The rule file is plain text: one rule per line.\n\nrule list shows all rules. rule exclude adds one rule and removes matching files from the visible iCloud copy immediately, but never deletes the local originals. rule include removes one matching rule; if no rule matches, it is ignored. The next sync can restore matching local content to iCloud."
+        long_about = "Manage gitignore-style exclude rules for a synced item. Rules are stored under QuickSync Application Support and use the same matching semantics as Git ignore files. The rule file is plain text: one rule per line.\n\nrule list shows all rules. rule exclude adds one rule and removes matching files from the target directory immediately, but never deletes source files. rule include removes one matching rule; if no rule matches, it is ignored. The next sync can restore matching source content to the target directory."
     )]
     #[command(after_help = "Examples:
-  qsync rule demo list
-  qsync rule demo exclude tmp/
-  qsync rule demo include tmp/")]
+  qs rule demo list
+  qs rule demo exclude tmp/
+  qs rule demo include tmp/")]
     Rule {
         #[arg(help = "Configured item name or internal item id")]
         name: String,
@@ -75,7 +69,7 @@ enum Command {
     },
     #[command(about = "List configured QuickSync items")]
     #[command(
-        long_about = "List configured items with their visible name, type, status, and original local path."
+        long_about = "List configured directory associations with their item name, status, source directory, and target directory."
     )]
     List,
     #[command(about = "Show daemon and item sync status")]
@@ -88,28 +82,28 @@ enum Command {
     },
     #[command(about = "Run environment health checks")]
     #[command(
-        long_about = "Check iCloud Drive access, QuickSync application support storage, state database access, and daemon availability."
+        long_about = "Check QuickSync application support storage, state database access, configured directory associations, and daemon availability."
     )]
     Doctor,
     #[command(about = "Run one manual sync pass")]
     #[command(
-        long_about = "Run one manual sync pass for all items or one named item. Normal usage should rely on qsyncd automatic syncing; this command is mainly for immediate verification and recovery."
+        long_about = "Run one manual sync pass for all items or one named item. Normal usage should rely on qsd automatic syncing; this command is mainly for immediate verification and recovery."
     )]
     Sync {
         #[arg(help = "Optional item name or internal item id")]
         name: Option<String>,
     },
-    #[command(about = "Stop syncing an item but keep cloud files")]
+    #[command(about = "Stop syncing an item but keep both directories")]
     #[command(
-        long_about = "Remove the local QuickSync association for an item. This keeps the original local file or folder, the visible iCloud copy, and hidden .quicksync metadata."
+        long_about = "Remove the local QuickSync association for an item. This keeps the source directory and target directory, but removes QuickSync's local rule and manifest files for the association."
     )]
     Remove {
         #[arg(help = "Item name or internal item id")]
         name: String,
     },
-    #[command(about = "Stop syncing an item and delete its cloud copy")]
+    #[command(about = "Stop syncing an item and delete the target directory")]
     #[command(
-        long_about = "Delete the local QuickSync association, the visible iCloud file or folder, and matching hidden manifest/rule files. The original local file or folder is never deleted."
+        long_about = "Delete the local QuickSync association, local rule and manifest files, and the target directory. The source directory is never deleted."
     )]
     Delete {
         #[arg(help = "Item name or internal item id")]
@@ -119,9 +113,9 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum RuleCommand {
-    #[command(about = "Exclude a path and prune matching cloud files")]
+    #[command(about = "Exclude a path and prune matching target files")]
     #[command(
-        long_about = "Add one gitignore-style exclude rule and prune matching cloud files. Matching follows the same semantics as Git ignore files. Matching files are removed from the visible iCloud copy immediately, while local originals are kept."
+        long_about = "Add one gitignore-style exclude rule and prune matching target files. Matching follows the same semantics as Git ignore files. Matching files are removed from the target directory immediately, while source files are kept."
     )]
     Exclude {
         #[arg(help = "Gitignore-style pattern, such as tmp/ or *.log")]
@@ -129,7 +123,7 @@ enum RuleCommand {
     },
     #[command(about = "Include a path again by removing an exclude rule")]
     #[command(
-        long_about = "Include a path again by removing one matching exclude rule. If no existing rule matches, the command succeeds without changing rules. Matching local files can be uploaded again on the next qsync sync or daemon sync pass."
+        long_about = "Include a path again by removing one matching exclude rule. If no existing rule matches, the command succeeds without changing rules. Matching source files can be copied to the target directory again on the next qs sync or daemon sync pass."
     )]
     Include {
         #[arg(help = "Exact rule pattern to include again")]
@@ -162,29 +156,29 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Add {
-            path,
-            name,
+            source_directory,
+            target_parent_directory,
             excludes,
             ignore_file,
         } => {
             let outcome = ops::add_item(AddOptions {
-                path,
-                name,
+                source_path: source_directory,
+                target_parent_path: target_parent_directory,
                 ignore_file,
                 excludes,
             })?;
             println!("added: {}", outcome.item.name);
             println!("type: {}", outcome.item.item_type);
-            println!("local: {}", outcome.item.local_path);
-            println!("cloud: {}", outcome.item.cloud_path);
+            println!("source: {}", outcome.item.local_path);
+            println!("target: {}", outcome.item.cloud_path);
             println!("manifest: {}", outcome.manifest_path);
             println!("rules: {}", outcome.item.exclude_count);
             println!(
-                "initial sync local -> cloud: {}",
+                "initial sync source -> target: {}",
                 outcome.sync_summary.copied_local_to_cloud
             );
             println!(
-                "initial sync cloud -> local: {}",
+                "initial sync target -> source: {}",
                 outcome.sync_summary.copied_cloud_to_local
             );
         }
@@ -216,7 +210,7 @@ fn run() -> Result<()> {
             if items.is_empty() {
                 println!("no items");
             } else {
-                println!("{:<24} {:<10} {:<10} LOCAL PATH", "NAME", "TYPE", "STATUS");
+                println!("{:<24} {:<10} {:<10} SOURCE PATH", "NAME", "TYPE", "STATUS");
                 for item in items {
                     println!(
                         "{:<24} {:<10} {:<10} {}",
@@ -241,8 +235,8 @@ fn run() -> Result<()> {
                 println!("name: {}", item.name);
                 println!("type: {}", item.item_type);
                 println!("status: {}", item.status);
-                println!("local: {}", item.local_path);
-                println!("cloud: {}", item.cloud_path);
+                println!("source: {}", item.local_path);
+                println!("target: {}", item.cloud_path);
                 println!("rules: {}", item.exclude_count);
                 if let Some(last_sync_at) = item.last_sync_at {
                     println!("last sync: {last_sync_at}");
@@ -277,26 +271,26 @@ fn run() -> Result<()> {
             }
             for summary in summaries {
                 println!("synced: {}", summary.item_name);
-                println!("local -> cloud: {}", summary.copied_local_to_cloud);
-                println!("cloud -> local: {}", summary.copied_cloud_to_local);
-                println!("deleted local: {}", summary.deleted_local);
-                println!("deleted cloud: {}", summary.deleted_cloud);
+                println!("source -> target: {}", summary.copied_local_to_cloud);
+                println!("target -> source: {}", summary.copied_cloud_to_local);
+                println!("deleted source: {}", summary.deleted_local);
+                println!("deleted target: {}", summary.deleted_cloud);
                 println!("unchanged: {}", summary.unchanged);
             }
         }
         Command::Remove { name } => {
             let item = ops::remove_item(&name)?;
             println!("removed from QuickSync: {}", item.name);
-            println!("local files kept: {}", item.local_path);
-            println!("cloud mirror kept: {}", item.cloud_path);
-            println!("hidden metadata kept");
+            println!("source kept: {}", item.local_path);
+            println!("target kept: {}", item.cloud_path);
+            println!("local metadata deleted");
         }
         Command::Delete { name } => {
             let item = ops::delete_item(&name)?;
             println!("deleted from QuickSync: {}", item.name);
-            println!("local files kept: {}", item.local_path);
-            println!("cloud files deleted: {}", item.cloud_path);
-            println!("hidden metadata deleted");
+            println!("source kept: {}", item.local_path);
+            println!("target deleted: {}", item.cloud_path);
+            println!("local metadata deleted");
         }
     }
 
@@ -320,15 +314,11 @@ fn yes_no(value: bool) -> &'static str {
 
 fn format_error(error: &QsyncError) -> String {
     match error {
-        QsyncError::IcloudMissing(path) => format!(
-            "error: iCloud Drive folder was not found at {}\nhelp: enable iCloud Drive, or set QUICKSYNC_ICLOUD_DIR when testing.",
-            path.display()
-        ),
         QsyncError::ItemExists(name) => format!(
-            "error: item already exists: {name}\nhelp: use a different --name, or run `qsync list` to see existing items."
+            "error: item already exists: {name}\nhelp: item names come from source directory names; rename the source directory or run `qs list` to see existing items."
         ),
         QsyncError::ItemNotFound(name) => format!(
-            "error: item was not found: {name}\nhelp: run `qsync list` to see configured items."
+            "error: item was not found: {name}\nhelp: run `qs list` to see configured items."
         ),
         QsyncError::PathMissing(path) => format!(
             "error: path does not exist: {}\nhelp: check the path and try again.",
@@ -347,6 +337,9 @@ fn format_error(error: &QsyncError) -> String {
         ),
         QsyncError::InvalidRulePattern(message) => format!(
             "error: invalid rule pattern: {message}\nhelp: pass one non-empty gitignore-style pattern, for example `tmp/` or `*.log`."
+        ),
+        QsyncError::InvalidAssociation(message) => format!(
+            "error: invalid sync association: {message}\nhelp: choose a target parent outside the source directory."
         ),
         _ => format!("error: {error}"),
     }

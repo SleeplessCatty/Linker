@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use crate::{QsyncError, Result};
 
 const APP_SUPPORT_ENV: &str = "QUICKSYNC_APP_SUPPORT_DIR";
-const ICLOUD_DIR_ENV: &str = "QUICKSYNC_ICLOUD_DIR";
 
 pub fn home_dir() -> Result<PathBuf> {
     env::var_os("HOME")
@@ -36,56 +35,25 @@ pub fn state_db_path() -> Result<PathBuf> {
     Ok(app_support_dir()?.join("state.sqlite"))
 }
 
-pub fn icloud_base_dir() -> Result<PathBuf> {
-    if let Some(path) = env::var_os(ICLOUD_DIR_ENV) {
-        return Ok(PathBuf::from(path));
-    }
-    Ok(home_dir()?.join("Library/Mobile Documents/com~apple~CloudDocs"))
-}
-
-pub fn ensure_icloud_base() -> Result<PathBuf> {
-    let path = icloud_base_dir()?;
-    if !path.exists() {
-        return Err(QsyncError::IcloudMissing(path));
-    }
-    Ok(path)
-}
-
-pub fn cloud_workspace_dir() -> Result<PathBuf> {
-    Ok(ensure_icloud_base()?.join("QuickSync"))
-}
-
-pub fn cloud_metadata_dir() -> Result<PathBuf> {
-    Ok(cloud_workspace_dir()?.join(".quicksync"))
-}
-
-pub fn cloud_manifests_dir() -> Result<PathBuf> {
-    Ok(cloud_metadata_dir()?.join("manifests"))
-}
-
-pub fn cloud_rules_dir() -> Result<PathBuf> {
-    Ok(cloud_metadata_dir()?.join("rules"))
-}
-
-pub fn cloud_item_path(name: &str) -> Result<PathBuf> {
-    validate_item_name(name)?;
-    Ok(cloud_workspace_dir()?.join(name))
-}
-
 pub fn ensure_base_dirs() -> Result<()> {
     fs::create_dir_all(app_support_dir()?.join("logs"))?;
     fs::create_dir_all(app_support_dir()?.join("tmp"))?;
-    fs::create_dir_all(cloud_workspace_dir()?)?;
-    fs::create_dir_all(cloud_manifests_dir()?)?;
-    fs::create_dir_all(cloud_rules_dir()?)?;
+    fs::create_dir_all(app_manifests_dir()?)?;
+    fs::create_dir_all(app_rules_dir()?)?;
     Ok(())
 }
 
-pub fn canonical_existing_path(path: &str) -> Result<PathBuf> {
+pub fn app_manifests_dir() -> Result<PathBuf> {
+    Ok(app_support_dir()?.join("manifests"))
+}
+
+pub fn app_rules_dir() -> Result<PathBuf> {
+    Ok(app_support_dir()?.join("rules"))
+}
+
+pub fn canonical_dir_create(path: &str) -> Result<PathBuf> {
     let path = expand_tilde(path)?;
-    if !path.exists() {
-        return Err(QsyncError::PathMissing(path));
-    }
+    fs::create_dir_all(&path)?;
     Ok(path.canonicalize()?)
 }
 
@@ -98,6 +66,11 @@ pub fn canonical_existing_dir(path: &str) -> Result<PathBuf> {
         return Err(QsyncError::NotDirectory(path));
     }
     Ok(path.canonicalize()?)
+}
+
+pub fn target_item_path(target_parent: &Path, name: &str) -> Result<PathBuf> {
+    validate_item_name(name)?;
+    Ok(target_parent.join(name))
 }
 
 pub fn default_item_name(path: &Path) -> Result<String> {

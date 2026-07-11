@@ -51,6 +51,16 @@ pub struct FileStateUpdate {
     pub deleted: bool,
 }
 
+pub struct NewItem<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub item_type: &'a str,
+    pub local_path: &'a str,
+    pub cloud_path: &'a str,
+    pub rule_path: &'a str,
+    pub rules: &'a [Rule],
+}
+
 pub struct StateDb {
     conn: Connection,
 }
@@ -148,18 +158,9 @@ impl StateDb {
         Ok(exists)
     }
 
-    pub fn insert_item(
-        &mut self,
-        id: &str,
-        name: &str,
-        item_type: &str,
-        local_path: &str,
-        cloud_path: &str,
-        rule_path: &str,
-        rules: &[Rule],
-    ) -> Result<()> {
-        if self.name_exists(name)? {
-            return Err(QsyncError::ItemExists(name.to_string()));
+    pub fn insert_item(&mut self, item: NewItem<'_>) -> Result<()> {
+        if self.name_exists(item.name)? {
+            return Err(QsyncError::ItemExists(item.name.to_string()));
         }
 
         let now = Utc::now().timestamp();
@@ -172,10 +173,18 @@ impl StateDb {
             )
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?7)
             "#,
-            params![id, name, item_type, local_path, cloud_path, rule_path, now],
+            params![
+                item.id,
+                item.name,
+                item.item_type,
+                item.local_path,
+                item.cloud_path,
+                item.rule_path,
+                now
+            ],
         )?;
 
-        for rule in rules {
+        for rule in item.rules {
             tx.execute(
                 r#"
                 INSERT OR IGNORE INTO exclude_rules (
@@ -183,7 +192,12 @@ impl StateDb {
                 )
                 VALUES (?1, ?2, ?3, ?4)
                 "#,
-                params![uuid::Uuid::new_v4().to_string(), id, &rule.pattern, now],
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    item.id,
+                    &rule.pattern,
+                    now
+                ],
             )?;
         }
 

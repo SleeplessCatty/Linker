@@ -1,4 +1,4 @@
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
@@ -44,24 +44,6 @@ pub struct DaemonHealth {
 pub fn doctor_report() -> DoctorReport {
     let mut checks = Vec::new();
 
-    let icloud_base = paths::icloud_base_dir();
-    match &icloud_base {
-        Ok(path) if path.exists() => checks.push(ok(
-            "iCloud Drive",
-            format!("found iCloud Drive folder at {}", path.display()),
-        )),
-        Ok(path) => checks.push(error(
-            "iCloud Drive",
-            format!("missing iCloud Drive folder at {}", path.display()),
-            "Enable iCloud Drive, or set QUICKSYNC_ICLOUD_DIR for testing.",
-        )),
-        Err(err) => checks.push(error(
-            "iCloud Drive",
-            err.to_string(),
-            "Check HOME or set QUICKSYNC_ICLOUD_DIR for testing.",
-        )),
-    }
-
     match paths::app_support_dir() {
         Ok(path) => match fs::create_dir_all(&path) {
             Ok(()) => checks.push(ok(
@@ -81,20 +63,6 @@ pub fn doctor_report() -> DoctorReport {
         )),
     }
 
-    if let Ok(path) = paths::cloud_workspace_dir() {
-        match ensure_writable_dir(&path) {
-            Ok(()) => checks.push(ok(
-                "QuickSync Workspace",
-                format!("writable at {}", path.display()),
-            )),
-            Err(err) => checks.push(error(
-                "QuickSync Workspace",
-                format!("not writable at {}: {err}", path.display()),
-                "Check iCloud Drive permissions and available storage.",
-            )),
-        }
-    }
-
     match paths::state_db_path().and_then(|path| StateDb::open(&path).map(|_| path)) {
         Ok(path) => checks.push(ok("State Database", format!("opened {}", path.display()))),
         Err(err) => checks.push(error(
@@ -104,23 +72,65 @@ pub fn doctor_report() -> DoctorReport {
         )),
     }
 
+    match paths::state_db_path().and_then(|path| StateDb::open(&path)) {
+        Ok(db) => match db.list_items() {
+            Ok(items) if items.is_empty() => checks.push(ok(
+                "Sync Associations",
+                "no configured directory associations".to_string(),
+            )),
+            Ok(items) => {
+                let mut missing = Vec::new();
+                for item in &items {
+                    if !Path::new(&item.local_path).is_dir() {
+                        missing.push(format!("source missing for {}", item.name));
+                    }
+                    if !Path::new(&item.cloud_path).is_dir() {
+                        missing.push(format!("target missing for {}", item.name));
+                    }
+                }
+                if missing.is_empty() {
+                    checks.push(ok(
+                        "Sync Associations",
+                        format!("{} configured item(s) are reachable", items.len()),
+                    ));
+                } else {
+                    checks.push(error(
+                        "Sync Associations",
+                        missing.join("; "),
+                        "Run `qs status`, then fix the missing directory or remove the association.",
+                    ));
+                }
+            }
+            Err(err) => checks.push(error(
+                "Sync Associations",
+                err.to_string(),
+                "Check the QuickSync state database.",
+            )),
+        },
+        Err(err) => checks.push(error(
+            "Sync Associations",
+            err.to_string(),
+            "Check QuickSync Application Support permissions.",
+        )),
+    }
+
     let daemon = daemon_health();
     match (&daemon.binary_path, daemon.installed, daemon.running) {
         (Some(path), true, true) => checks.push(ok(
             "Daemon",
-            format!("qsyncd appears to be running at {}", path.display()),
+            format!("qsd appears to be running at {}", path.display()),
         )),
         (Some(path), true, false) => checks.push(warn(
             "Daemon",
             format!(
-                "qsyncd binary found at {}, but it does not appear to be running",
+                "qsd binary found at {}, but it does not appear to be running",
                 path.display()
             ),
-            "Run ./scripts/install.sh, or start qsyncd manually for testing.",
+            "Run ./scripts/install.sh, or start qsd manually for testing.",
         )),
         _ => checks.push(warn(
             "Daemon",
-            "qsyncd binary was not found next to qsync".to_string(),
+            "qsd binary was not found next to qs".to_string(),
             "Build the project or run ./scripts/install.sh.",
         )),
     }
@@ -129,7 +139,7 @@ pub fn doctor_report() -> DoctorReport {
 }
 
 pub fn daemon_health() -> DaemonHealth {
-    let binary_path = qsyncd_binary_path();
+    let binary_path = qsd_binary_path();
     let installed = binary_path.as_ref().is_some_and(|path| path.exists());
     let running = is_daemon_lock_held();
 
@@ -140,15 +150,15 @@ pub fn daemon_health() -> DaemonHealth {
     }
 }
 
-fn qsyncd_binary_path() -> Option<PathBuf> {
+fn qsd_binary_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    let candidate = dir.join("qsyncd");
+    let candidate = dir.join("qsd");
     Some(candidate)
 }
 
 fn is_daemon_lock_held() -> bool {
-    let Ok(path) = paths::app_support_dir().map(|dir| dir.join("qsyncd.lock")) else {
+    let Ok(path) = paths::app_support_dir().map(|dir| dir.join("qsd.lock")) else {
         return false;
     };
     if !path.exists() {
@@ -166,14 +176,6 @@ fn is_daemon_lock_held() -> bool {
         }
         Err(_) => true,
     }
-}
-
-fn ensure_writable_dir(path: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(path)?;
-    let test_path = path.join(".qsync-write-test");
-    File::create(&test_path)?;
-    fs::remove_file(test_path)?;
-    Ok(())
 }
 
 fn ok(name: &str, message: String) -> HealthCheck {

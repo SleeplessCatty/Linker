@@ -4,54 +4,50 @@
 
 Build the smallest reliable version of QuickSync:
 
-1. `qsync add <path>` adds a local file or folder.
-2. A background daemon automatically mirrors eligible content through iCloud Drive.
+1. `qs add <source-directory> <target-parent-directory>` creates a directory association.
+2. A background daemon automatically keeps the source directory and target directory in sync.
 3. Users can customize exclude rules.
 4. If both sides differ, the newest modified file wins automatically.
 
-The MVP deliberately avoids complex conflict management, multi-device administration, and deep recovery workflows.
+There is no global QuickSync workspace and no `qs init` step.
 
 ## Architecture
 
 ```text
-Local File/Folder
-    |
+Source Directory
+    ^
     | scan/watch/copy
     v
-qsyncd
-    |
-    | mirror copy
+qsd
+    ^
+    | scan/watch/copy
     v
-iCloud Drive / QuickSync / <name>
+Target Parent Directory / <source-directory-name>
 ```
 
 The sync model is bidirectional mirror copy.
 
 QuickSync does not:
 
-- move the original path
+- move the source directory
 - create symlinks
 - mount a filesystem
 - implement its own cloud backend
 
 ## Paths
 
-iCloud base path:
+For this command:
 
-```text
-~/Library/Mobile Documents/com~apple~CloudDocs
+```bash
+qs add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
 ```
 
-QuickSync cloud workspace:
+QuickSync stores:
 
 ```text
-~/Library/Mobile Documents/com~apple~CloudDocs/QuickSync/
-├── <synced file or directory>
-└── .quicksync/
-    ├── manifests/
-    │   └── <name>.json
-    └── rules/
-        └── <name>.ignore
+source directory: ~/Documents/Notes
+target directory: ~/Library/Mobile Documents/com~apple~CloudDocs/Notes
+item name: Notes
 ```
 
 Local app state:
@@ -59,42 +55,46 @@ Local app state:
 ```text
 ~/Library/Application Support/QuickSync/
 ├── state.sqlite
+├── manifests/
+│   └── <name>.json
+├── rules/
+│   └── <name>.ignore
 ├── logs/
 └── tmp/
 ```
 
-No QuickSync control files are written into the user's synced source folder.
+No QuickSync control files are written into the source directory or target parent directory.
 
 ## MVP Commands
 
 ```text
-qsync add <path> [--name <name>] [--ignore-file <path>] [--exclude <pattern>]...
-qsync rule <name> list
-qsync rule <name> exclude <pattern>
-qsync rule <name> include <pattern>
-qsync list
-qsync status [name]
-qsync sync [name]
-qsync remove <name>
-qsync delete <name>
-qsync doctor
+qs add <source-directory> <target-parent-directory> [--ignore-file <path>] [--exclude <pattern>]...
+qs rule <name> list
+qs rule <name> exclude <pattern>
+qs rule <name> include <pattern>
+qs list
+qs status [name]
+qs sync [name]
+qs remove <name>
+qs delete <name>
+qs doctor
 ```
 
 Command responsibilities:
 
-- `add`: create item, create visible iCloud path, create hidden metadata, perform initial sync.
+- `add`: create association, create or reuse target directory, create local metadata, perform initial sync.
 - `rule list`: list all exclude rules for an item.
-- `rule exclude`: add one exclude rule and prune matching cloud-visible files.
+- `rule exclude`: add one exclude rule and prune matching target files.
 - `rule include`: delete one matching exclude rule; if no rule matches, succeed without changing rules.
-- `list`: show configured items.
+- `list`: show configured associations.
 - `status`: show daemon/basic item health.
 - `sync`: run one sync pass manually.
-- `remove`: stop syncing an item without deleting local or cloud files.
-- `delete`: stop syncing and remove cloud-visible files plus hidden metadata.
+- `remove`: stop syncing an item without deleting source or target directories.
+- `delete`: stop syncing and remove the target directory.
 
 ## Manifest
 
-Each item has one hidden cloud manifest:
+Each item has one local manifest:
 
 ```json
 {
@@ -102,20 +102,19 @@ Each item has one hidden cloud manifest:
   "id": "uuid",
   "name": "demo",
   "type": "directory",
-  "local_path_hint": "/Users/jason/code/demo",
-  "item_path": "demo",
-  "rule_path": ".quicksync/rules/demo.ignore",
-  "created_at": "2026-05-29T00:00:00Z",
-  "updated_at": "2026-05-29T00:00:00Z"
+  "source_path": "/Users/jason/code/demo",
+  "target_path": "/Users/jason/Library/Mobile Documents/com~apple~CloudDocs/demo",
+  "rule_path": "/Users/jason/Library/Application Support/QuickSync/rules/demo.ignore",
+  "created_at": "2026-07-11T00:00:00Z",
+  "updated_at": "2026-07-11T00:00:00Z"
 }
 ```
 
 Notes:
 
 - `id` is the internal stable identity.
-- `name` is the visible iCloud file/folder name and must be unique.
-- `type` is `file` or `directory`.
-- `local_path_hint` is only a convenience hint for the original device, not an authority.
+- `name` is the source directory name and must be unique.
+- `type` is currently `directory`.
 
 ## State Database
 
@@ -143,6 +142,8 @@ CREATE TABLE items (
 );
 ```
 
+The internal column names still use `local_path` and `cloud_path` for compatibility. User-facing behavior treats them as source and target paths.
+
 The database also stores exclude rules and per-file sync state.
 
 ## Rule Engine
@@ -152,76 +153,74 @@ Default rules are empty. QuickSync does not automatically import `.gitignore` an
 Each item has one plain-text rule file:
 
 ```text
-QuickSync/.quicksync/rules/<name>.ignore
+~/Library/Application Support/QuickSync/rules/<name>.ignore
 ```
 
-The file stores one rule per line. `--ignore-file`, repeated `--exclude`, and later `qsync rule exclude` all produce the same kind of rule.
+The file stores one rule per line. `--ignore-file`, repeated `--exclude`, and later `qs rule exclude` all produce the same kind of rule.
 
 Implementation uses Rust's `ignore` crate and follows the same matching semantics as Git ignore files.
 
 When rules change:
 
 - future scans use the new rules
-- newly excluded local files are ignored
-- newly excluded cloud-visible files are removed from iCloud
-- local files are not deleted only because they became excluded
+- newly excluded source files are ignored
+- newly excluded target files are removed from the target directory
+- source files are not deleted only because they became excluded
 
 ## Sync Algorithm
 
 For each item:
 
 ```text
-1. scan local side
-2. scan cloud side
+1. scan source side
+2. scan target side
 3. apply exclude rules
-4. compare local and cloud file metadata
+4. compare source and target file metadata
 5. decide operation
 6. copy/delete
 7. update file_states
 ```
 
-For a directory item, relative paths are normal paths inside the directory.
-
-For a single-file item, the internal relative path is empty and both sides point directly to the file.
+Relative paths are normal paths inside the associated directory.
 
 ## Latest Modified Wins
 
-If local and cloud both exist and differ:
+If source and target both exist and differ:
 
-- local newer -> copy local to cloud
-- cloud newer -> copy cloud to local
+- source newer -> copy source to target
+- target newer -> copy target to source
 - same content -> no-op
-- same mtime but different content -> prefer local by default
+- same mtime but different content -> prefer source by default
 
-This matches the desired automatic, iCloud-like behavior. It is not a version-control system.
+This matches the desired automatic behavior. It is not a version-control system.
 
 ## Delete Behavior
 
 Inside an item:
 
-- local file deleted -> delete cloud mirror file
-- cloud mirror file deleted -> delete local file
+- source file deleted -> delete target file
+- target file deleted -> delete source file
 
 Item commands:
 
-- `remove` deletes only local QuickSync association state.
-- `delete` deletes local QuickSync association state, cloud-visible content, and hidden cloud metadata.
-- neither command deletes the user's original local file or folder.
+- `remove` deletes local QuickSync association state and local metadata, but keeps source and target directories.
+- `delete` deletes local QuickSync association state, local metadata, and target directory.
+- neither command deletes the source directory.
 
-Root local path missing pauses the item by marking an error; QuickSync should not automatically delete a root path.
+Root source path missing pauses the item by marking an error; QuickSync should not automatically delete a root path.
 
 ## Watcher and Scheduling
 
 The daemon watches:
 
-- local item paths
-- cloud item paths
+- source item paths
+- target item paths
 
 Scheduling:
 
 ```text
 file event -> debounce 2 seconds -> sync item
-manual qsync sync -> sync immediately
+manual qs sync -> sync immediately
 periodic reconciliation -> every 5 minutes
 ```
 

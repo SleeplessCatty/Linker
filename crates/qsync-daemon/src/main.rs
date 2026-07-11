@@ -16,7 +16,7 @@ const DEBOUNCE: Duration = Duration::from_secs(2);
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Parser)]
-#[command(name = "qsyncd")]
+#[command(name = "qsd")]
 #[command(about = "QuickSync background daemon")]
 struct Args {
     #[arg(long)]
@@ -25,7 +25,7 @@ struct Args {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("qsyncd error: {error}");
+        eprintln!("qsd error: {error}");
         std::process::exit(1);
     }
 }
@@ -106,7 +106,7 @@ impl Daemon {
             self.watch_item_path(watcher, &item.id, Path::new(&item.cloud_path))?;
         }
 
-        eprintln!("qsyncd watching {} item(s)", self.items.len());
+        eprintln!("qsd watching {} item(s)", self.items.len());
         Ok(())
     }
 
@@ -179,7 +179,7 @@ impl Daemon {
             Ok(summaries) => {
                 for summary in summaries {
                     eprintln!(
-                        "qsyncd {reason} synced {}: local->cloud={}, cloud->local={}, deleted_local={}, deleted_cloud={}, unchanged={}",
+                        "qsd {reason} synced {}: source->target={}, target->source={}, deleted_source={}, deleted_target={}, unchanged={}",
                         summary.item_name,
                         summary.copied_local_to_cloud,
                         summary.copied_cloud_to_local,
@@ -189,7 +189,7 @@ impl Daemon {
                     );
                 }
             }
-            Err(error) => eprintln!("qsyncd failed to sync {}: {error}", item.name),
+            Err(error) => eprintln!("qsd failed to sync {}: {error}", item.name),
         }
     }
 }
@@ -201,13 +201,14 @@ struct DaemonLock {
 
 impl DaemonLock {
     fn acquire() -> Result<Self> {
-        let path = paths::app_support_dir()?.join("qsyncd.lock");
+        let path = paths::app_support_dir()?.join("qsd.lock");
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
 
         let file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&path)?;
@@ -225,5 +226,5 @@ impl Drop for DaemonLock {
 }
 
 fn to_io_error(error: notify::Error) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, error.to_string())
+    std::io::Error::other(error.to_string())
 }

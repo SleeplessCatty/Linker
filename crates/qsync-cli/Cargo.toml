@@ -5,7 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "qsync"
+name = "qs"
 path = "src/main.rs"
 
 [dependencies]

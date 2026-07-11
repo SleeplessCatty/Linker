@@ -13,10 +13,12 @@ From a local checkout:
 The script:
 
 - builds release binaries
-- installs `qsync` and `qsyncd` under `~/Library/Application Support/QuickSync/bin/`
-- creates `/usr/local/bin/qsync` and `/usr/local/bin/qsyncd` command links by default
-- creates `~/Library/LaunchAgents/com.quicksync.qsyncd.plist`
+- installs `qs` and `qsd` under `~/Library/Application Support/QuickSync/bin/`
+- creates `/usr/local/bin/qs` and `/usr/local/bin/qsd` command links by default
+- creates `~/Library/LaunchAgents/com.quicksync.qsd.plist`
 - starts the daemon with `launchctl`
+
+QuickSync does not need a global workspace initialization step. Add each directory by passing a source directory and a target parent directory.
 
 Creating command links under `/usr/local/bin` may ask for your administrator password because that directory is usually owned by `root`.
 
@@ -26,7 +28,7 @@ If you do not want command links:
 ./scripts/install.sh --no-link
 ```
 
-If you skip command links, make `qsync` available in every terminal by adding this to your shell profile:
+If you skip command links, make `qs` available in every terminal by adding this to your shell profile:
 
 ```bash
 export PATH="$PATH:$HOME/Library/Application Support/QuickSync/bin"
@@ -61,8 +63,8 @@ The remote installer requires `git` and Rust/Cargo on the target Mac. It clones 
 `./scripts/install.sh` now creates these links by default:
 
 ```text
-/usr/local/bin/qsync  -> ~/Library/Application Support/QuickSync/bin/qsync
-/usr/local/bin/qsyncd -> ~/Library/Application Support/QuickSync/bin/qsyncd
+/usr/local/bin/qs  -> ~/Library/Application Support/QuickSync/bin/qs
+/usr/local/bin/qsd -> ~/Library/Application Support/QuickSync/bin/qsd
 ```
 
 You can choose another link directory:
@@ -74,15 +76,15 @@ You can choose another link directory:
 If you installed without links, create them manually:
 
 ```bash
-sudo ln -sf "$HOME/Library/Application Support/QuickSync/bin/qsync" /usr/local/bin/qsync
-sudo ln -sf "$HOME/Library/Application Support/QuickSync/bin/qsyncd" /usr/local/bin/qsyncd
+sudo ln -sf "$HOME/Library/Application Support/QuickSync/bin/qs" /usr/local/bin/qs
+sudo ln -sf "$HOME/Library/Application Support/QuickSync/bin/qsd" /usr/local/bin/qsd
 ```
 
 Verify:
 
 ```bash
-which qsync
-qsync --help
+which qs
+qs --help
 ```
 
 To remove those links:
@@ -94,7 +96,7 @@ To remove those links:
 or manually:
 
 ```bash
-sudo rm -f /usr/local/bin/qsync /usr/local/bin/qsyncd
+sudo rm -f /usr/local/bin/qs /usr/local/bin/qsd
 ```
 
 ## Homebrew Formula
@@ -147,16 +149,17 @@ brew install --HEAD quicksync
 ## Verify
 
 ```bash
-qsync list
-qsync status
-launchctl print gui/$(id -u)/com.quicksync.qsyncd
+qs list
+qs status
+qs doctor
+launchctl print gui/$(id -u)/com.quicksync.qsd
 ```
 
 Daemon logs:
 
 ```text
-~/Library/Application Support/QuickSync/logs/qsyncd.out.log
-~/Library/Application Support/QuickSync/logs/qsyncd.err.log
+~/Library/Application Support/QuickSync/logs/qsd.out.log
+~/Library/Application Support/QuickSync/logs/qsd.err.log
 ```
 
 ## Uninstall

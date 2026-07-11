@@ -9,88 +9,96 @@ use tempfile::TempDir;
 struct Sandbox {
     _tmp: TempDir,
     app_support: PathBuf,
-    icloud: PathBuf,
-    local: PathBuf,
+    sources: PathBuf,
+    target_parent: PathBuf,
 }
 
 impl Sandbox {
     fn new() -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         let app_support = tmp.path().join("app-support");
-        let icloud = tmp.path().join("icloud");
-        let local = tmp.path().join("local");
+        let sources = tmp.path().join("sources");
+        let target_parent = tmp.path().join("target-parent");
 
         fs::create_dir_all(&app_support).expect("app support");
-        fs::create_dir_all(&icloud).expect("icloud");
-        fs::create_dir_all(&local).expect("local");
+        fs::create_dir_all(&sources).expect("sources");
+        fs::create_dir_all(&target_parent).expect("target parent");
 
         Self {
             _tmp: tmp,
             app_support,
-            icloud,
-            local,
+            sources,
+            target_parent,
         }
     }
 
-    fn qsync(&self) -> Command {
-        let mut cmd = Command::cargo_bin("qsync").expect("qsync bin");
-        cmd.env("QUICKSYNC_APP_SUPPORT_DIR", &self.app_support)
-            .env("QUICKSYNC_ICLOUD_DIR", &self.icloud);
+    fn qs(&self) -> Command {
+        let mut cmd = Command::cargo_bin("qs").expect("qs bin");
+        cmd.env("QUICKSYNC_APP_SUPPORT_DIR", &self.app_support);
+        cmd.env_remove("QUICKSYNC_ICLOUD_DIR");
         cmd
     }
 
-    fn quicksync_dir(&self) -> PathBuf {
-        self.icloud.join("QuickSync")
+    fn source_dir(&self, name: &str) -> PathBuf {
+        let path = self.sources.join(name);
+        fs::create_dir_all(&path).expect("source dir");
+        path
     }
 
     fn item_path(&self, name: &str) -> PathBuf {
-        self.quicksync_dir().join(name)
+        self.target_parent.join(name)
     }
 
     fn manifest_path(&self, name: &str) -> PathBuf {
-        self.quicksync_dir()
-            .join(".quicksync/manifests")
+        self.app_support
+            .join("manifests")
             .join(format!("{name}.json"))
     }
 
     fn rule_path(&self, name: &str) -> PathBuf {
-        self.quicksync_dir()
-            .join(".quicksync/rules")
+        self.app_support
+            .join("rules")
             .join(format!("{name}.ignore"))
     }
 }
 
 #[test]
-fn add_list_status_and_remove_item_keep_cloud_content_and_metadata() {
+fn add_list_status_and_remove_item_keep_source_and_target() {
     let sandbox = Sandbox::new();
-    write_file(&sandbox.local.join("README.md"), "hello");
+    let source = sandbox.source_dir("demo");
+    write_file(&source.join("README.md"), "hello");
 
     sandbox
-        .qsync()
-        .args(["add", sandbox.local.to_str().unwrap(), "--name", "demo"])
+        .qs()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
         .assert()
         .success()
         .stdout(pred_contains("added: demo"))
         .stdout(pred_contains("type: directory"))
-        .stdout(pred_contains("initial sync local -> cloud: 1"));
+        .stdout(pred_contains("source:"))
+        .stdout(pred_contains("target:"))
+        .stdout(pred_contains("initial sync source -> target: 1"));
 
-    let cloud_readme = sandbox.item_path("demo").join("README.md");
-    assert_eq!(read_file(&cloud_readme), "hello");
+    let target_readme = sandbox.item_path("demo").join("README.md");
+    assert_eq!(read_file(&target_readme), "hello");
     assert!(sandbox.manifest_path("demo").exists());
     assert!(sandbox.rule_path("demo").exists());
-    assert!(!sandbox.quicksync_dir().join("Items").exists());
 
     sandbox
-        .qsync()
+        .qs()
         .arg("list")
         .assert()
         .success()
         .stdout(pred_contains("demo"))
         .stdout(pred_contains("directory"))
-        .stdout(pred_contains(sandbox.local.to_str().unwrap()));
+        .stdout(pred_contains(source.to_str().unwrap()));
 
     sandbox
-        .qsync()
+        .qs()
         .args(["status", "demo"])
         .assert()
         .success()
@@ -98,44 +106,51 @@ fn add_list_status_and_remove_item_keep_cloud_content_and_metadata() {
         .stdout(pred_contains("daemon running:"))
         .stdout(pred_contains("type: directory"))
         .stdout(pred_contains("status: active"))
+        .stdout(pred_contains("source:"))
+        .stdout(pred_contains("target:"))
         .stdout(pred_contains("rules: 0"));
 
     sandbox
-        .qsync()
+        .qs()
         .args(["remove", "demo"])
         .assert()
         .success()
-        .stdout(pred_contains("local files kept"))
-        .stdout(pred_contains("cloud mirror kept"))
-        .stdout(pred_contains("hidden metadata kept"));
+        .stdout(pred_contains("source kept"))
+        .stdout(pred_contains("target kept"))
+        .stdout(pred_contains("local metadata deleted"));
 
-    assert!(sandbox.local.join("README.md").exists());
-    assert!(cloud_readme.exists());
-    assert!(sandbox.manifest_path("demo").exists());
-    assert!(sandbox.rule_path("demo").exists());
+    assert!(source.join("README.md").exists());
+    assert!(target_readme.exists());
+    assert!(!sandbox.manifest_path("demo").exists());
+    assert!(!sandbox.rule_path("demo").exists());
 }
 
 #[test]
-fn delete_removes_cloud_content_and_metadata_but_keeps_local_files() {
+fn delete_removes_target_but_keeps_source() {
     let sandbox = Sandbox::new();
-    write_file(&sandbox.local.join("README.md"), "hello");
+    let source = sandbox.source_dir("demo");
+    write_file(&source.join("README.md"), "hello");
 
     sandbox
-        .qsync()
-        .args(["add", sandbox.local.to_str().unwrap(), "--name", "demo"])
+        .qs()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
         .assert()
         .success();
 
     sandbox
-        .qsync()
+        .qs()
         .args(["delete", "demo"])
         .assert()
         .success()
-        .stdout(pred_contains("local files kept"))
-        .stdout(pred_contains("cloud files deleted"))
-        .stdout(pred_contains("hidden metadata deleted"));
+        .stdout(pred_contains("source kept"))
+        .stdout(pred_contains("target deleted"))
+        .stdout(pred_contains("local metadata deleted"));
 
-    assert!(sandbox.local.join("README.md").exists());
+    assert!(source.join("README.md").exists());
     assert!(!sandbox.item_path("demo").exists());
     assert!(!sandbox.manifest_path("demo").exists());
     assert!(!sandbox.rule_path("demo").exists());
@@ -144,12 +159,17 @@ fn delete_removes_cloud_content_and_metadata_but_keeps_local_files() {
 #[test]
 fn add_defaults_to_empty_ignore_and_can_use_ignore_file_or_inline_excludes() {
     let sandbox = Sandbox::new();
-    write_file(&sandbox.local.join(".env"), "secret");
-    write_file(&sandbox.local.join("node_modules/pkg/index.js"), "pkg");
+    let source = sandbox.source_dir("demo");
+    write_file(&source.join(".env"), "secret");
+    write_file(&source.join("node_modules/pkg/index.js"), "pkg");
 
     sandbox
-        .qsync()
-        .args(["add", sandbox.local.to_str().unwrap(), "--name", "demo"])
+        .qs()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
         .assert()
         .success();
 
@@ -159,20 +179,18 @@ fn add_defaults_to_empty_ignore_and_can_use_ignore_file_or_inline_excludes() {
         "pkg"
     );
 
-    let second = sandbox.local.with_file_name("second");
-    fs::create_dir_all(&second).expect("second dir");
+    let second = sandbox.source_dir("second");
     write_file(&second.join("src/app.js"), "app");
     write_file(&second.join("dist/bundle.js"), "bundle");
     let ignore_file = sandbox.app_support.join("rules.ignore");
     write_file(&ignore_file, "dist/\ntmp/\n");
 
     sandbox
-        .qsync()
+        .qs()
         .args([
             "add",
             second.to_str().unwrap(),
-            "--name",
-            "second",
+            sandbox.target_parent.to_str().unwrap(),
             "--ignore-file",
             ignore_file.to_str().unwrap(),
             "--exclude",
@@ -193,7 +211,7 @@ fn add_defaults_to_empty_ignore_and_can_use_ignore_file_or_inline_excludes() {
     );
 
     sandbox
-        .qsync()
+        .qs()
         .args(["rule", "second", "list"])
         .assert()
         .success()
@@ -202,14 +220,14 @@ fn add_defaults_to_empty_ignore_and_can_use_ignore_file_or_inline_excludes() {
         .stdout(pred_contains("tmp/"));
 
     sandbox
-        .qsync()
+        .qs()
         .args(["rule", "second", "include", "dist/"])
         .assert()
         .success()
         .stdout(pred_contains("rule included: dist/"))
         .stdout(pred_contains("rules: 1"));
 
-    sandbox.qsync().args(["sync", "second"]).assert().success();
+    sandbox.qs().args(["sync", "second"]).assert().success();
     assert_eq!(
         read_file(&sandbox.item_path("second").join("dist/bundle.js")),
         "bundle"
@@ -217,35 +235,69 @@ fn add_defaults_to_empty_ignore_and_can_use_ignore_file_or_inline_excludes() {
 }
 
 #[test]
-fn duplicate_visible_name_is_rejected() {
+fn duplicate_directory_name_is_rejected() {
     let sandbox = Sandbox::new();
-    write_file(&sandbox.local.join("README.md"), "hello");
-    let other = sandbox.local.with_file_name("other");
-    fs::create_dir_all(&other).expect("other dir");
+    let first_parent = sandbox.sources.join("first");
+    let second_parent = sandbox.sources.join("second");
+    let first = first_parent.join("demo");
+    let second = second_parent.join("demo");
+    fs::create_dir_all(&first).expect("first");
+    fs::create_dir_all(&second).expect("second");
+    write_file(&first.join("README.md"), "hello");
 
     sandbox
-        .qsync()
-        .args(["add", sandbox.local.to_str().unwrap(), "--name", "demo"])
+        .qs()
+        .args([
+            "add",
+            first.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
         .assert()
         .success();
 
     sandbox
-        .qsync()
-        .args(["add", other.to_str().unwrap(), "--name", "demo"])
+        .qs()
+        .args([
+            "add",
+            second.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
         .assert()
         .failure()
         .stderr(pred_contains("item already exists"));
 }
 
 #[test]
-fn rule_exclude_prunes_cloud_and_rule_include_restores_after_sync() {
+fn nested_or_same_source_and_target_is_rejected() {
     let sandbox = Sandbox::new();
-    write_file(&sandbox.local.join("src/app.js"), "app");
-    write_file(&sandbox.local.join("tmp/cache.txt"), "cache");
+    let source = sandbox.source_dir("demo");
 
     sandbox
-        .qsync()
-        .args(["add", sandbox.local.to_str().unwrap(), "--name", "demo"])
+        .qs()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            sandbox.sources.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(pred_contains("invalid sync association"));
+}
+
+#[test]
+fn rule_exclude_prunes_target_and_rule_include_restores_after_sync() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.source_dir("demo");
+    write_file(&source.join("src/app.js"), "app");
+    write_file(&source.join("tmp/cache.txt"), "cache");
+
+    sandbox
+        .qs()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
         .assert()
         .success();
 
@@ -253,18 +305,18 @@ fn rule_exclude_prunes_cloud_and_rule_include_restores_after_sync() {
     assert!(item_dir.join("tmp/cache.txt").exists());
 
     sandbox
-        .qsync()
+        .qs()
         .args(["rule", "demo", "exclude", "tmp/"])
         .assert()
         .success()
         .stdout(pred_contains("rule excluded: tmp/"));
 
-    assert!(sandbox.local.join("tmp/cache.txt").exists());
+    assert!(source.join("tmp/cache.txt").exists());
     assert!(!item_dir.join("tmp/cache.txt").exists());
     assert_eq!(read_file(&sandbox.rule_path("demo")), "tmp/\n");
 
     sandbox
-        .qsync()
+        .qs()
         .args(["rule", "demo", "exclude", "tmp/"])
         .assert()
         .success()
@@ -272,24 +324,24 @@ fn rule_exclude_prunes_cloud_and_rule_include_restores_after_sync() {
     assert_eq!(read_file(&sandbox.rule_path("demo")), "tmp/\n");
 
     sandbox
-        .qsync()
+        .qs()
         .args(["rule", "demo", "list"])
         .assert()
         .success()
         .stdout(pred_contains("tmp/"));
 
     sandbox
-        .qsync()
+        .qs()
         .args(["rule", "demo", "include", "tmp/"])
         .assert()
         .success()
         .stdout(pred_contains("rule included: tmp/"));
 
-    sandbox.qsync().args(["sync", "demo"]).assert().success();
+    sandbox.qs().args(["sync", "demo"]).assert().success();
     assert_eq!(read_file(&item_dir.join("tmp/cache.txt")), "cache");
 
     sandbox
-        .qsync()
+        .qs()
         .args(["rule", "demo", "include", "missing/"])
         .assert()
         .success()
@@ -298,103 +350,79 @@ fn rule_exclude_prunes_cloud_and_rule_include_restores_after_sync() {
 }
 
 #[test]
-fn single_file_item_syncs_directly_under_quicksync() {
-    let sandbox = Sandbox::new();
-    let local_file = sandbox.local.join("file.md");
-    write_file(&local_file, "local file");
-
-    sandbox
-        .qsync()
-        .args(["add", local_file.to_str().unwrap()])
-        .assert()
-        .success()
-        .stdout(pred_contains("type: file"));
-
-    let cloud_file = sandbox.item_path("file.md");
-    assert_eq!(read_file(&cloud_file), "local file");
-    assert!(sandbox.manifest_path("file.md").exists());
-    assert!(sandbox.rule_path("file.md").exists());
-
-    write_file(&cloud_file, "cloud edit");
-    set_mtime(&cloud_file, 300);
-    set_mtime(&local_file, 100);
-
-    sandbox
-        .qsync()
-        .args(["sync", "file.md"])
-        .assert()
-        .success()
-        .stdout(pred_contains("cloud -> local: 1"));
-    assert_eq!(read_file(&local_file), "cloud edit");
-}
-
-#[test]
 fn sync_copies_both_directions_and_latest_modified_wins() {
     let sandbox = Sandbox::new();
-    write_file(&sandbox.local.join("local.txt"), "local");
+    let source = sandbox.source_dir("demo");
+    write_file(&source.join("local.txt"), "local");
 
     sandbox
-        .qsync()
-        .args(["add", sandbox.local.to_str().unwrap(), "--name", "demo"])
+        .qs()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
         .assert()
         .success();
 
     let item_dir = sandbox.item_path("demo");
 
-    write_file(&sandbox.local.join("second.txt"), "from local");
+    write_file(&source.join("second.txt"), "from source");
     sandbox
-        .qsync()
+        .qs()
         .args(["sync", "demo"])
         .assert()
         .success()
-        .stdout(pred_contains("local -> cloud: 1"));
-    assert_eq!(read_file(&item_dir.join("second.txt")), "from local");
+        .stdout(pred_contains("source -> target: 1"));
+    assert_eq!(read_file(&item_dir.join("second.txt")), "from source");
 
-    write_file(&item_dir.join("cloud.txt"), "from cloud");
+    write_file(&item_dir.join("target.txt"), "from target");
     sandbox
-        .qsync()
+        .qs()
         .args(["sync", "demo"])
         .assert()
         .success()
-        .stdout(pred_contains("cloud -> local: 1"));
-    assert_eq!(read_file(&sandbox.local.join("cloud.txt")), "from cloud");
+        .stdout(pred_contains("target -> source: 1"));
+    assert_eq!(read_file(&source.join("target.txt")), "from target");
 
-    write_file(&sandbox.local.join("winner.txt"), "old local");
-    sandbox.qsync().args(["sync", "demo"]).assert().success();
+    write_file(&source.join("winner.txt"), "old source");
+    sandbox.qs().args(["sync", "demo"]).assert().success();
 
-    write_file(&sandbox.local.join("winner.txt"), "older local edit");
-    write_file(&item_dir.join("winner.txt"), "newer cloud edit");
-    set_mtime(&sandbox.local.join("winner.txt"), 100);
+    write_file(&source.join("winner.txt"), "older source edit");
+    write_file(&item_dir.join("winner.txt"), "newer target edit");
+    set_mtime(&source.join("winner.txt"), 100);
     set_mtime(&item_dir.join("winner.txt"), 200);
 
-    sandbox.qsync().args(["sync", "demo"]).assert().success();
-    assert_eq!(
-        read_file(&sandbox.local.join("winner.txt")),
-        "newer cloud edit"
-    );
+    sandbox.qs().args(["sync", "demo"]).assert().success();
+    assert_eq!(read_file(&source.join("winner.txt")), "newer target edit");
 }
 
 #[test]
 fn sync_deletes_inner_file_from_other_side() {
     let sandbox = Sandbox::new();
-    write_file(&sandbox.local.join("src/a.txt"), "a");
+    let source = sandbox.source_dir("demo");
+    write_file(&source.join("src/a.txt"), "a");
 
     sandbox
-        .qsync()
-        .args(["add", sandbox.local.to_str().unwrap(), "--name", "demo"])
+        .qs()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
         .assert()
         .success();
 
     let item_dir = sandbox.item_path("demo");
     assert!(item_dir.join("src/a.txt").exists());
 
-    fs::remove_file(sandbox.local.join("src/a.txt")).expect("remove local");
+    fs::remove_file(source.join("src/a.txt")).expect("remove source");
     sandbox
-        .qsync()
+        .qs()
         .args(["sync", "demo"])
         .assert()
         .success()
-        .stdout(pred_contains("deleted cloud: 1"));
+        .stdout(pred_contains("deleted target: 1"));
     assert!(!item_dir.join("src/a.txt").exists());
 }
 
@@ -403,64 +431,78 @@ fn doctor_reports_isolated_environment_health() {
     let sandbox = Sandbox::new();
 
     sandbox
-        .qsync()
+        .qs()
         .arg("doctor")
         .assert()
         .success()
-        .stdout(pred_contains("[ok] iCloud Drive"))
         .stdout(pred_contains("[ok] Application Support"))
-        .stdout(pred_contains("[ok] QuickSync Workspace"))
-        .stdout(pred_contains("[ok] State Database"));
+        .stdout(pred_contains("[ok] State Database"))
+        .stdout(pred_contains("[ok] Sync Associations"));
 }
 
 #[test]
 fn errors_include_actionable_hints() {
     let sandbox = Sandbox::new();
+    let source = sandbox.source_dir("demo");
 
     sandbox
-        .qsync()
+        .qs()
         .args(["status", "missing"])
         .assert()
         .failure()
-        .stderr(pred_contains("run `qsync list`"));
+        .stderr(pred_contains("run `qs list`"));
 
     sandbox
-        .qsync()
-        .args(["add", sandbox.local.join("nope").to_str().unwrap()])
+        .qs()
+        .args([
+            "add",
+            sandbox.sources.join("nope").to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
         .assert()
         .failure()
         .stderr(pred_contains("check the path and try again"));
 
+    let file = sandbox.sources.join("file.md");
+    write_file(&file, "file");
     sandbox
-        .qsync()
+        .qs()
         .args([
             "add",
-            sandbox.local.to_str().unwrap(),
-            "--name",
-            ".quicksync",
+            file.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
         ])
         .assert()
         .failure()
-        .stderr(pred_contains("invalid item name"));
+        .stderr(pred_contains("path is not a directory"));
 
     sandbox
-        .qsync()
+        .qs()
         .args(["rule", "missing", "exclude", ""])
         .assert()
         .failure()
         .stderr(pred_contains("invalid rule pattern"));
+
+    sandbox
+        .qs()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            sandbox.sources.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(pred_contains(
+            "choose a target parent outside the source directory",
+        ));
 }
 
 #[test]
 fn help_describes_core_commands_and_rule_behavior() {
     let sandbox = Sandbox::new();
 
-    let no_args = sandbox.qsync().output().expect("qsync without args");
-    let with_help = sandbox
-        .qsync()
-        .arg("--help")
-        .output()
-        .expect("qsync --help");
+    let no_args = sandbox.qs().output().expect("qs without args");
+    let with_help = sandbox.qs().arg("--help").output().expect("qs --help");
     assert!(no_args.status.success());
     assert!(with_help.status.success());
     assert_eq!(no_args.stdout, with_help.stdout);
@@ -468,46 +510,50 @@ fn help_describes_core_commands_and_rule_behavior() {
     assert!(with_help.stderr.is_empty());
 
     sandbox
-        .qsync()
+        .qs()
         .assert()
         .success()
-        .stdout(pred_contains("Usage: qsync <COMMAND>"))
-        .stdout(pred_contains("Common workflow:"));
+        .stdout(pred_contains("Usage: qs <COMMAND>"))
+        .stdout(pred_contains("Common workflow:"))
+        .stdout(predicates::str::contains("qs init").not().from_utf8());
 
     sandbox
-        .qsync()
+        .qs()
         .arg("--help")
         .assert()
         .success()
-        .stdout(pred_contains("QuickSync/.quicksync"))
-        .stdout(pred_contains("remove keeps cloud files"))
-        .stdout(pred_contains("delete removes cloud files"));
+        .stdout(pred_contains("target parent directory"))
+        .stdout(pred_contains("remove stops tracking"))
+        .stdout(pred_contains("delete stops tracking"));
 
     sandbox
-        .qsync()
+        .qs()
         .args(["add", "--help"])
         .assert()
         .success()
-        .stdout(pred_contains("Local file or folder to sync"))
+        .stdout(pred_contains("Source directory to sync"))
+        .stdout(pred_contains(
+            "Parent directory where the target directory will be created",
+        ))
         .stdout(pred_contains("does not import .gitignore"))
         .stdout(pred_contains("--ignore-file"));
 
     sandbox
-        .qsync()
-        .args(["rule", "exclude", "--help"])
+        .qs()
+        .args(["rule", "demo", "exclude", "--help"])
         .assert()
         .success()
-        .stdout(pred_contains("prune matching cloud files"))
-        .stdout(pred_contains("local originals are kept"));
+        .stdout(pred_contains("prune matching target files"))
+        .stdout(pred_contains("source files are kept"));
 
     sandbox
-        .qsync()
-        .args(["rule", "include", "--help"])
+        .qs()
+        .args(["rule", "demo", "include", "--help"])
         .assert()
         .success()
         .stdout(pred_contains("Include a path again"))
         .stdout(pred_contains("If no existing rule matches"))
-        .stdout(pred_contains("next qsync sync"));
+        .stdout(pred_contains("next qs sync"));
 }
 
 fn pred_contains(text: &str) -> impl Predicate<[u8]> {

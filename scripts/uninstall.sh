@@ -4,7 +4,7 @@ set -euo pipefail
 APP_SUPPORT_DIR="${HOME}/Library/Application Support/QuickSync"
 BIN_DIR="${APP_SUPPORT_DIR}/bin"
 LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
-PLIST_LABEL="com.quicksync.qsyncd"
+PLIST_LABEL="com.quicksync.qsd"
 PLIST_PATH="${LAUNCH_AGENTS_DIR}/${PLIST_LABEL}.plist"
 LINK_DIR="/usr/local/bin"
 REMOVE_LINKS=1
@@ -14,7 +14,7 @@ usage() {
 Usage: ./scripts/uninstall.sh [--link-dir <dir>] [--no-link]
 
 Options:
-  --link-dir <dir>  Remove qsync/qsyncd symlinks from <dir>.
+  --link-dir <dir>  Remove qs/qsd symlinks from <dir>.
                    Default: /usr/local/bin
   --no-link         Do not remove command symlinks.
   -h, --help       Show this help.
@@ -50,14 +50,14 @@ done
 launchctl bootout "gui/$(id -u)" "${PLIST_PATH}" >/dev/null 2>&1 || true
 
 rm -f "${PLIST_PATH}"
-rm -f "${BIN_DIR}/qsync" "${BIN_DIR}/qsyncd"
+rm -f "${BIN_DIR}/qs" "${BIN_DIR}/qsd"
 
 if [[ "${REMOVE_LINKS}" == "1" ]]; then
   if [[ -w "${LINK_DIR}" ]]; then
-    rm -f "${LINK_DIR}/qsync" "${LINK_DIR}/qsyncd"
+    rm -f "${LINK_DIR}/qs" "${LINK_DIR}/qsd"
   else
     echo "Removing command links from ${LINK_DIR} requires administrator permission."
-    sudo rm -f "${LINK_DIR}/qsync" "${LINK_DIR}/qsyncd"
+    sudo rm -f "${LINK_DIR}/qs" "${LINK_DIR}/qsd"
   fi
 fi
 

@@ -7,14 +7,14 @@ use crate::health::{self, DaemonHealth, DoctorReport};
 use crate::manifest::{write_manifest, Manifest};
 use crate::paths;
 use crate::rules::{initial_rules, normalize_rule_pattern, write_rule_snapshot, Rule};
-use crate::state::{Item, StateDb};
+use crate::state::{Item, NewItem, StateDb};
 use crate::sync::SyncSummary;
 use crate::Result;
 
 #[derive(Debug, Clone)]
 pub struct AddOptions {
-    pub path: String,
-    pub name: Option<String>,
+    pub source_path: String,
+    pub target_parent_path: String,
     pub ignore_file: Option<String>,
     pub excludes: Vec<String>,
 }
@@ -27,20 +27,10 @@ pub struct AddOutcome {
 }
 
 pub fn add_item(options: AddOptions) -> Result<AddOutcome> {
-    let local_path = paths::canonical_existing_path(&options.path)?;
-    let name = options
-        .name
-        .unwrap_or(paths::default_item_name(&local_path)?);
+    let local_path = paths::canonical_existing_dir(&options.source_path)?;
+    let target_parent = paths::canonical_dir_create(&options.target_parent_path)?;
+    let name = paths::default_item_name(&local_path)?;
     paths::validate_item_name(&name)?;
-
-    let metadata = fs::metadata(&local_path)?;
-    let item_type = if metadata.is_file() {
-        "file"
-    } else if metadata.is_dir() {
-        "directory"
-    } else {
-        return Err(crate::QsyncError::PathMissing(local_path));
-    };
 
     paths::ensure_base_dirs()?;
 
@@ -50,18 +40,17 @@ pub fn add_item(options: AddOptions) -> Result<AddOutcome> {
     }
 
     let id = Uuid::new_v4().to_string();
-    let cloud_path = paths::cloud_item_path(&name)?;
+    let cloud_path = paths::target_item_path(&target_parent, &name)?;
+    validate_association_paths(&local_path, &cloud_path)?;
     if cloud_path.exists() {
-        return Err(crate::QsyncError::ItemExists(name));
+        if !cloud_path.is_dir() {
+            return Err(crate::QsyncError::NotDirectory(cloud_path));
+        }
     }
-    let manifest_path = paths::cloud_manifests_dir()?.join(format!("{name}.json"));
-    let rule_path = paths::cloud_rules_dir()?.join(format!("{name}.ignore"));
+    let manifest_path = paths::app_manifests_dir()?.join(format!("{name}.json"));
+    let rule_path = paths::app_rules_dir()?.join(format!("{name}.ignore"));
 
-    if item_type == "directory" {
-        fs::create_dir_all(&cloud_path)?;
-    } else if let Some(parent) = cloud_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    fs::create_dir_all(&cloud_path)?;
 
     let ignore_file = options
         .ignore_file
@@ -76,8 +65,10 @@ pub fn add_item(options: AddOptions) -> Result<AddOutcome> {
     let manifest = Manifest::new(
         id.clone(),
         name.clone(),
-        item_type.to_string(),
+        "directory".to_string(),
         local_path.to_string_lossy().to_string(),
+        cloud_path.to_string_lossy().to_string(),
+        rule_path.to_string_lossy().to_string(),
     );
     write_manifest(&manifest_path, &manifest)?;
 
@@ -85,15 +76,15 @@ pub fn add_item(options: AddOptions) -> Result<AddOutcome> {
     let cloud_path_string = cloud_path.to_string_lossy().to_string();
     let rule_path_string = rule_path.to_string_lossy().to_string();
 
-    db.insert_item(
-        &id,
-        &name,
-        item_type,
-        &local_path_string,
-        &cloud_path_string,
-        &rule_path_string,
-        &rules,
-    )?;
+    db.insert_item(NewItem {
+        id: &id,
+        name: &name,
+        item_type: "directory",
+        local_path: &local_path_string,
+        cloud_path: &cloud_path_string,
+        rule_path: &rule_path_string,
+        rules: &rules,
+    })?;
 
     let item = db.get_item(&name)?;
     let sync_summary = crate::sync::sync_item(&db, &item, &rules)?;
@@ -128,14 +119,17 @@ pub fn doctor() -> DoctorReport {
 
 pub fn remove_item(name: &str) -> Result<Item> {
     let db = StateDb::open(&paths::state_db_path()?)?;
-    db.remove_item(name)
+    let item = db.remove_item(name)?;
+    remove_file_if_exists(&paths::app_manifests_dir()?.join(format!("{}.json", item.name)))?;
+    remove_file_if_exists(Path::new(&item.rule_path))?;
+    Ok(item)
 }
 
 pub fn delete_item(name: &str) -> Result<Item> {
     let db = StateDb::open(&paths::state_db_path()?)?;
     let item = db.get_item(name)?;
     remove_path_if_exists(Path::new(&item.cloud_path))?;
-    remove_file_if_exists(&paths::cloud_manifests_dir()?.join(format!("{}.json", item.name)))?;
+    remove_file_if_exists(&paths::app_manifests_dir()?.join(format!("{}.json", item.name)))?;
     remove_file_if_exists(Path::new(&item.rule_path))?;
     db.remove_item(name)
 }
@@ -213,4 +207,24 @@ fn remove_path_if_exists(path: &Path) -> Result<()> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err.into()),
     }
+}
+
+fn validate_association_paths(source_path: &Path, target_path: &Path) -> Result<()> {
+    let target_compare = if target_path.exists() {
+        target_path.canonicalize()?
+    } else {
+        target_path.to_path_buf()
+    };
+
+    if source_path == target_compare
+        || source_path.starts_with(&target_compare)
+        || target_compare.starts_with(source_path)
+    {
+        return Err(crate::QsyncError::InvalidAssociation(
+            "source directory and target directory must be separate; one cannot contain the other"
+                .to_string(),
+        ));
+    }
+
+    Ok(())
 }

@@ -1,17 +1,18 @@
 # QuickSync Command Usage
 
-QuickSync keeps selected local files or folders mirrored through iCloud Drive.
-The cloud workspace is intentionally readable on iPhone and iPad:
+QuickSync links a source directory to a target parent directory.
 
-```text
-~/Library/Mobile Documents/com~apple~CloudDocs/QuickSync/
-├── <your synced file or folder>
-└── .quicksync/
-    ├── manifests/
-    └── rules/
+```bash
+qs add <source-directory> <target-parent-directory>
 ```
 
-The `.quicksync` directory is internal metadata. Normal viewing and editing should happen in the visible files and folders directly under `QuickSync/`.
+If the source directory is `~/Documents/Notes`, the item name is `Notes`, and the target directory becomes:
+
+```text
+<target-parent-directory>/Notes/
+```
+
+There is no `qs init` step and no global QuickSync workspace.
 
 ## Install
 
@@ -19,20 +20,14 @@ The `.quicksync` directory is internal metadata. Normal viewing and editing shou
 ./scripts/install.sh
 ```
 
-Add the installed binaries to your shell path if needed:
-
-```bash
-export PATH="$PATH:$HOME/Library/Application Support/QuickSync/bin"
-```
-
 Verify:
 
 ```bash
-qsync doctor
-qsync status
+qs doctor
+qs status
 ```
 
-The install script creates `/usr/local/bin/qsync` and `/usr/local/bin/qsyncd` by default. This may ask for your administrator password.
+The install script creates `/usr/local/bin/qs` and `/usr/local/bin/qsd` by default. This may ask for your administrator password.
 
 To install without command links:
 
@@ -40,47 +35,27 @@ To install without command links:
 ./scripts/install.sh --no-link
 ```
 
-Homebrew packaging notes are in [INSTALL.md](INSTALL.md).
-
-After the GitHub repository is published, remote install will be:
+Remote install:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/QuickSync/main/scripts/install-remote.sh | bash
 ```
 
-## Add a Folder
+## Add a Directory
 
 ```bash
-qsync add ~/Documents/Notes
+qs add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
 ```
 
-This creates:
+This creates or reuses:
 
 ```text
-iCloud Drive/QuickSync/Notes/
-iCloud Drive/QuickSync/.quicksync/manifests/Notes.json
-iCloud Drive/QuickSync/.quicksync/rules/Notes.ignore
+~/Library/Mobile Documents/com~apple~CloudDocs/Notes/
 ```
 
-Use a different visible iCloud name:
+The item name is always the source directory name. Names must be unique; QuickSync rejects a second association named `Notes`.
 
-```bash
-qsync add ~/Documents/Notes --name WorkNotes
-```
-
-Names must be unique. QuickSync will reject a second file or folder with the same cloud name.
-
-## Add a Single File
-
-```bash
-qsync add ~/Documents/todo.md
-```
-
-This syncs directly to:
-
-```text
-iCloud Drive/QuickSync/todo.md
-```
+The source and target directories must be separate. QuickSync rejects associations where one side contains the other.
 
 ## Exclude Rules During Add
 
@@ -89,53 +64,58 @@ By default, QuickSync creates an empty ignore file and excludes nothing. It does
 Import rules from a file:
 
 ```bash
-qsync add ~/code/demo --ignore-file ~/code/demo/.qsyncignore
+qs add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --ignore-file ~/code/demo/.qsyncignore
 ```
 
 Add multiple rules inline:
 
 ```bash
-qsync add ~/code/demo --exclude node_modules/ --exclude dist/
+qs add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --exclude node_modules/ --exclude dist/
 ```
 
 Combine both:
 
 ```bash
-qsync add ~/code/demo --ignore-file ~/code/demo/.qsyncignore --exclude .env
+qs add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --ignore-file ~/code/demo/.qsyncignore --exclude .env
 ```
 
 Rule syntax follows the same matching semantics as Git ignore files. The saved rule file is plain text: one rule per line.
 
+Rule and manifest files are stored locally:
+
+```text
+~/Library/Application Support/QuickSync/rules/<name>.ignore
+~/Library/Application Support/QuickSync/manifests/<name>.json
+```
+
 ## Manage Exclude Rules
 
-List all rules, one pattern per line:
+List all rules:
 
 ```bash
-qsync rule demo list
+qs rule demo list
 ```
 
 Add one exclude rule:
 
 ```bash
-qsync rule demo exclude tmp/
+qs rule demo exclude tmp/
 ```
 
-This immediately removes matching files from the visible iCloud mirror. It does not delete the original local files.
+This immediately removes matching files from the target directory. It does not delete source files.
 
 Delete one exclude rule and allow a path to sync again:
 
 ```bash
-qsync rule demo include tmp/
-qsync sync demo
+qs rule demo include tmp/
+qs sync demo
 ```
-
-The next sync uploads the matching local content back to iCloud.
 
 If `include` does not find a matching rule, it succeeds without changing the rule list.
 
 ## Sync
 
-The daemon normally syncs automatically after `qsync add`.
+The daemon normally syncs automatically after `qs add`.
 
 Current automatic sync timing:
 
@@ -145,70 +125,69 @@ Current automatic sync timing:
 Manual sync is mainly for testing, recovery, or immediate verification:
 
 ```bash
-qsync sync
-qsync sync demo
+qs sync
+qs sync demo
 ```
 
-Conflict behavior is latest-modified-wins. If local and cloud copies differ, the side with the newer modification time overwrites the older side.
+Conflict behavior is latest-modified-wins. If source and target copies differ, the side with the newer modification time overwrites the older side.
 
 ## Inspect Items
 
 ```bash
-qsync list
-qsync status
-qsync status demo
-qsync doctor
+qs list
+qs status
+qs status demo
+qs doctor
 ```
 
 `status` shows daemon health, item paths, item type, rule count, last sync time, and last error.
 
 ## Remove vs Delete
 
-Remove only the local QuickSync association:
+Remove only the QuickSync association:
 
 ```bash
-qsync remove demo
+qs remove demo
 ```
 
 This keeps:
 
-- the original local file or folder
-- the visible iCloud copy
-- hidden `.quicksync` metadata
+- the source directory
+- the target directory
 
-Delete the QuickSync association and cloud data:
+It deletes local QuickSync metadata for that association.
+
+Delete the QuickSync association and target directory:
 
 ```bash
-qsync delete demo
+qs delete demo
 ```
 
-This keeps the original local file or folder, but deletes:
+This keeps the source directory, but deletes:
 
-- the visible iCloud file or folder
-- the matching manifest
-- the matching ignore file
+- the target directory
+- the matching local manifest
+- the matching local ignore file
 
 ## Mobile Editing
 
-Open iCloud Drive, then `QuickSync`, then the synced file or folder name. Edits made there are synced back to the original Mac path by the daemon.
+Use an iCloud Drive folder as the target parent if you want mobile access:
 
-Avoid editing files inside `.quicksync`; that directory is only for QuickSync metadata.
+```bash
+qs add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
+```
+
+Then open `Notes` in iCloud Drive on iPhone or iPad. Edits made there are synced back to the source directory by the daemon.
 
 ## Common Issues
 
-If iCloud Drive is not found:
+If a name is rejected, another association with the same source directory name already exists. Rename the source directory or remove the old association.
 
-```bash
-qsync doctor
-```
-
-If a name is rejected, choose a simple file or folder name with `--name`. Path separators are not allowed, and `.quicksync` is reserved.
+If a target path is rejected, make sure the target parent is outside the source directory.
 
 If a file does not come back after removing a rule, run:
 
 ```bash
-qsync sync <name>
-qsync status <name>
+qs sync <name>
+qs status <name>
 ```
-
-If a previous experiment created `QuickSync/Items/`, remove it manually after confirming you no longer need it. This version does not migrate the old UUID-based structure.

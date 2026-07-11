@@ -136,11 +136,12 @@ Conflict behavior is latest-modified-wins. If source and target copies differ, t
 ```bash
 qs list
 qs status
-qs status demo
 qs doctor
 ```
 
-`status` shows daemon health, item paths, item type, rule count, last sync time, and last error.
+`list` shows configured sync associations, item status, source path, target path, rule count, last sync time, and last error.
+
+`status` only shows background daemon health.
 
 ## Remove vs Delete
 
@@ -189,5 +190,5 @@ If a file does not come back after removing a rule, run:
 
 ```bash
 qs sync <name>
-qs status <name>
+qs list
 ```

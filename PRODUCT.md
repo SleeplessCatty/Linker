@@ -125,7 +125,7 @@ qs rule <name> include <pattern>
 qs remove <name>
 qs delete <name>
 qs list
-qs status [name]
+qs status
 qs sync [name]
 qs doctor
 ```

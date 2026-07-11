@@ -93,25 +93,25 @@ fn add_list_status_and_remove_item_keep_source_and_target() {
         .arg("list")
         .assert()
         .success()
+        .stdout(pred_contains("=== demo ==="))
         .stdout(pred_contains("demo"))
         .stdout(pred_contains("directory"))
+        .stdout(pred_contains("status: active"))
         .stdout(pred_contains("source:"))
         .stdout(pred_contains(source.to_str().unwrap()))
         .stdout(pred_contains("target:"))
-        .stdout(pred_contains(sandbox.item_path("demo").to_str().unwrap()));
+        .stdout(pred_contains(sandbox.item_path("demo").to_str().unwrap()))
+        .stdout(pred_contains("rules: 0"));
 
     sandbox
         .qs()
-        .args(["status", "demo"])
+        .arg("status")
         .assert()
         .success()
         .stdout(pred_contains("daemon installed:"))
         .stdout(pred_contains("daemon running:"))
-        .stdout(pred_contains("type: directory"))
-        .stdout(pred_contains("status: active"))
-        .stdout(pred_contains("source:"))
-        .stdout(pred_contains("target:"))
-        .stdout(pred_contains("rules: 0"));
+        .stdout(predicates::str::contains("source:").not().from_utf8())
+        .stdout(predicates::str::contains("target:").not().from_utf8());
 
     sandbox
         .qs()
@@ -126,6 +126,44 @@ fn add_list_status_and_remove_item_keep_source_and_target() {
     assert!(target_readme.exists());
     assert!(!sandbox.manifest_path("demo").exists());
     assert!(!sandbox.rule_path("demo").exists());
+}
+
+#[test]
+fn list_separates_multiple_items_and_emphasizes_names() {
+    let sandbox = Sandbox::new();
+    let alpha = sandbox.source_dir("alpha");
+    let beta = sandbox.source_dir("beta");
+    write_file(&alpha.join("a.txt"), "a");
+    write_file(&beta.join("b.txt"), "b");
+
+    sandbox
+        .qs()
+        .args([
+            "add",
+            alpha.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    sandbox
+        .qs()
+        .args([
+            "add",
+            beta.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    sandbox
+        .qs()
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(pred_contains("=== alpha ==="))
+        .stdout(pred_contains("----------------------------------------"))
+        .stdout(pred_contains("=== beta ==="))
+        .stdout(pred_contains("target:"));
 }
 
 #[test]
@@ -450,7 +488,7 @@ fn errors_include_actionable_hints() {
 
     sandbox
         .qs()
-        .args(["status", "missing"])
+        .args(["sync", "missing"])
         .assert()
         .failure()
         .stderr(pred_contains("run `qs list`"));

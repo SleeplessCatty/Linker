@@ -100,15 +100,6 @@ pub fn list_items() -> Result<Vec<Item>> {
     db.list_items()
 }
 
-pub fn status(name: Option<&str>) -> Result<Vec<Item>> {
-    let db = StateDb::open(&paths::state_db_path()?)?;
-    if let Some(name) = name {
-        Ok(vec![db.get_item(name)?])
-    } else {
-        db.list_items()
-    }
-}
-
 pub fn daemon_status() -> DaemonHealth {
     health::daemon_health()
 }

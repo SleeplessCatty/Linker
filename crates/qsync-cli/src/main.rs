@@ -14,7 +14,7 @@ use qsync_core::{QsyncError, Result};
   qs add ~/Documents/Notes ~/Library/Mobile\\ Documents/com~apple~CloudDocs
   qs rule Notes exclude tmp/
   qs sync Notes
-  qs status Notes
+  qs status
 
 Important:
   remove stops tracking but keeps both source and target directories.
@@ -72,14 +72,11 @@ enum Command {
         long_about = "List configured directory associations with their item name, status, source directory, and target directory."
     )]
     List,
-    #[command(about = "Show daemon and item sync status")]
+    #[command(about = "Show background daemon status")]
     #[command(
-        long_about = "Show daemon installation/running state and sync status. Pass an item name to show one item, or omit it to show all configured items."
+        long_about = "Show only the background daemon installation and running state. Use `qs list` to inspect configured directory associations and sync item state."
     )]
-    Status {
-        #[arg(help = "Optional item name or internal item id")]
-        name: Option<String>,
-    },
+    Status,
     #[command(about = "Run environment health checks")]
     #[command(
         long_about = "Check QuickSync application support storage, state database access, configured directory associations, and daemon availability."
@@ -210,40 +207,31 @@ fn run() -> Result<()> {
             if items.is_empty() {
                 println!("no items");
             } else {
-                for item in items {
-                    println!("name: {}", item.name);
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        println!("----------------------------------------");
+                    }
+                    println!("=== {} ===", item.name);
                     println!("type: {}", item.item_type);
                     println!("status: {}", item.status);
                     println!("source: {}", item.local_path);
                     println!("target: {}", item.cloud_path);
+                    println!("rules: {}", item.exclude_count);
+                    if let Some(last_sync_at) = item.last_sync_at {
+                        println!("last sync: {last_sync_at}");
+                    }
+                    if let Some(last_error) = &item.last_error {
+                        println!("last error: {last_error}");
+                    }
                 }
             }
         }
-        Command::Status { name } => {
+        Command::Status => {
             let daemon = ops::daemon_status();
             println!("daemon installed: {}", yes_no(daemon.installed));
             println!("daemon running: {}", yes_no(daemon.running));
             if let Some(path) = daemon.binary_path {
                 println!("daemon path: {}", path.display());
-            }
-
-            let items = ops::status(name.as_deref())?;
-            if items.is_empty() {
-                println!("no items");
-            }
-            for item in items {
-                println!("name: {}", item.name);
-                println!("type: {}", item.item_type);
-                println!("status: {}", item.status);
-                println!("source: {}", item.local_path);
-                println!("target: {}", item.cloud_path);
-                println!("rules: {}", item.exclude_count);
-                if let Some(last_sync_at) = item.last_sync_at {
-                    println!("last sync: {last_sync_at}");
-                }
-                if let Some(last_error) = item.last_error {
-                    println!("last error: {last_error}");
-                }
             }
         }
         Command::Doctor => {

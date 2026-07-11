@@ -73,7 +73,7 @@ qs rule <name> list
 qs rule <name> exclude <pattern>
 qs rule <name> include <pattern>
 qs list
-qs status [name]
+qs status
 qs sync [name]
 qs remove <name>
 qs delete <name>
@@ -86,8 +86,8 @@ Command responsibilities:
 - `rule list`: list all exclude rules for an item.
 - `rule exclude`: add one exclude rule and prune matching target files.
 - `rule include`: delete one matching exclude rule; if no rule matches, succeed without changing rules.
-- `list`: show configured associations.
-- `status`: show daemon/basic item health.
+- `list`: show configured associations and item sync state.
+- `status`: show daemon health only.
 - `sync`: run one sync pass manually.
 - `remove`: stop syncing an item without deleting source or target directories.
 - `delete`: stop syncing and remove the target directory.

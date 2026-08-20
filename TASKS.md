@@ -1,9 +1,9 @@
-# QuickSync Development Tasks
+# Linker Development Tasks
 
 ## MVP Decisions
 
-- CLI binary name: `qs`
-- Daemon binary name: `qsd`
+- CLI binary name: `linker`
+- Daemon binary name: `linkerd`
 - MVP target: macOS directory sync
 - Sync model: bidirectional mirror copy between source directory and target directory
 - Conflict behavior: latest modified file wins
@@ -15,12 +15,12 @@
 Status: completed
 
 - [x] Create Rust workspace
-- [x] Create `qs` CLI binary
+- [x] Create `linker` CLI binary
 - [x] Create core library for paths, manifest, and state
 - [x] Initialize SQLite state database
-- [x] Implement `qs add <source-directory> <target-parent-directory>`
-- [x] Implement `qs list`
-- [x] Implement basic `qs status [name]`
+- [x] Implement `linker add <source-directory> <target-parent-directory>`
+- [x] Implement `linker list`
+- [x] Implement basic `linker status [name]`
 - [x] Create target directory under the target parent
 - [x] Write manifest under Application Support
 - [x] Write rule snapshot under Application Support
@@ -31,9 +31,9 @@ Status: completed
 - [x] Default to empty excludes
 - [x] Support explicit `--ignore-file`
 - [x] Support explicit `--exclude`
-- [x] Implement `qs rule <name> exclude <pattern>`
-- [x] Implement `qs rule <name> include <pattern>`
-- [x] Implement `qs rule <name> list`
+- [x] Implement `linker rule <name> exclude <pattern>`
+- [x] Implement `linker rule <name> include <pattern>`
+- [x] Implement `linker rule <name> list`
 - [x] Show exclude count in status
 - [ ] Dry scan report during add
 
@@ -47,21 +47,21 @@ Status: completed
 - [x] Copy source changes to target
 - [x] Copy target changes to source
 - [x] Handle inner-file deletions
-- [x] Implement `qs sync [name]`
-- [x] Run initial sync during `qs add`
+- [x] Implement `linker sync [name]`
+- [x] Run initial sync during `linker add`
 - [x] Add core sync unit tests
 - [x] Add end-to-end CLI integration tests for manual sync
 
 ## Phase 4: Daemon Auto Sync
 
-- [x] Create `qsd`
+- [x] Create `linkerd`
 - [x] Watch source directories
 - [x] Watch target directories
 - [x] Debounce file events
 - [x] Run item sync jobs
 - [x] Add periodic reconciliation
 - [x] Prevent concurrent sync jobs for the same item
-- [x] Add `qsd --once` for one-shot daemon verification
+- [x] Add `linkerd --once` for one-shot daemon verification
 - [x] Add daemon integration test
 
 ## Phase 4.5: Directory Association and Command Semantics
@@ -71,7 +71,7 @@ Status: completed
 - [x] Use source directory names as item names
 - [x] Reject duplicate item names
 - [x] Defer single-file sync support
-- [x] Implement `qs delete <name>`
+- [x] Implement `linker delete <name>`
 - [x] Define `remove` as association-only
 - [x] Add detailed `USAGE.md`
 
@@ -81,8 +81,8 @@ Status: completed
 - [x] Add install/uninstall script or Homebrew formula
 - [x] Add log directory and basic log output
 - [x] Add isolated automated app tests with temporary app/iCloud paths
-- [x] Add simplified `qs doctor`
-- [x] Show daemon installed/running state in `qs status`
+- [x] Add simplified `linker doctor`
+- [x] Show daemon installed/running state in `linker status`
 - [x] Improve user-facing errors
 - [ ] Add integration tests with temporary folders
 

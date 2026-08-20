@@ -1,6 +1,6 @@
-# QuickSync
+# Linker
 
-QuickSync is a lightweight macOS directory sync tool.
+Linker is a lightweight macOS directory sync tool.
 
 The first version focuses on three practical needs:
 
@@ -8,30 +8,30 @@ The first version focuses on three practical needs:
 2. Customize exclude rules for each linked directory.
 3. Resolve changes automatically by using the latest modified file.
 
-There is no global QuickSync workspace. Add a directory by passing both sides:
+There is no global Linker workspace. Add a directory by passing both sides:
 
 ```bash
-qs add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
+linker add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
 ```
 
-QuickSync creates or reuses:
+Linker creates or reuses:
 
 ```text
 ~/Library/Mobile Documents/com~apple~CloudDocs/Notes/
 ```
 
-The source directory name, `Notes`, is the item name used by `qs sync`, `qs rule`, `qs remove`, and `qs delete`.
+The source directory name, `Notes`, is the item name used by `linker sync`, `linker rule`, `linker remove`, and `linker delete`.
 
-QuickSync metadata is stored locally under:
+Linker metadata is stored locally under:
 
 ```text
-~/Library/Application Support/QuickSync/
+~/Library/Application Support/Linker/
 ├── state.sqlite
 ├── manifests/
 └── rules/
 ```
 
-No QuickSync control directory is written into the target parent directory, so iCloud Drive stays readable on mobile devices.
+No Linker control directory is written into the target parent directory, so iCloud Drive stays readable on mobile devices.
 
 ## Documents
 
@@ -47,8 +47,8 @@ No QuickSync control directory is written into the target parent directory, so i
 
 ```bash
 cargo test
-cargo run -p qsync-cli -- --help
-cargo run -p qsync-daemon -- --help
+cargo run -p linker-cli -- --help
+cargo run -p linker-daemon -- --help
 ```
 
 ## Install
@@ -59,21 +59,23 @@ From a local checkout:
 ./scripts/install.sh
 ```
 
-This installs `qs` and `qsd` under:
+This installs `linker` and `linkerd` under:
 
 ```text
-~/Library/Application Support/QuickSync/bin/
+~/Library/Application Support/Linker/bin/
 ```
 
-It also creates `/usr/local/bin/qs`, `/usr/local/bin/qsd`, and starts a user LaunchAgent for `qsd`.
+It also creates `/usr/local/bin/linker`, `/usr/local/bin/linkerd`, and starts a user LaunchAgent for `linkerd`.
 
 Use `./scripts/install.sh --no-link` if you do not want `/usr/local/bin` command links.
 
 Remote install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/QuickSync/main/scripts/install-remote.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/install-remote.sh | bash
 ```
+
+Linker 0.2 is an incompatible clean cutover. Installation removes legacy managed state and command links, but never deletes configured source or target directories; associations must be added again. See [INSTALL.md](INSTALL.md) for the exact behavior.
 
 ## MVP Scope
 

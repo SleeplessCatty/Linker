@@ -1,17 +1,17 @@
-# QuickSync Project Audit
+# Linker Project Audit
 
 ## Current Architecture
 
-QuickSync is a Rust workspace with three crates:
+Linker is a Rust workspace with three crates:
 
-- `qsync-core`: shared paths, state database, rule handling, manifests, health checks, and sync engine.
-- `qsync-cli`: user-facing `qs` command.
-- `qsync-daemon`: background watcher and periodic sync daemon.
+- `linker-core`: shared paths, state database, rule handling, manifests, health checks, and sync engine.
+- `linker-cli`: user-facing `linker` command.
+- `linker-daemon`: background watcher and periodic sync daemon.
 
 Runtime state is stored outside the repository:
 
-- local state: `~/Library/Application Support/QuickSync/`
-- sync targets: selected per association with `qs add <source-directory> <target-parent-directory>`
+- local state: `~/Library/Application Support/Linker/`
+- sync targets: selected per association with `linker add <source-directory> <target-parent-directory>`
 
 ## File Description
 
@@ -24,17 +24,20 @@ Runtime state is stored outside the repository:
 - `TASKS.md`: development progress and remaining roadmap.
 - `scripts/install.sh`: local checkout installer.
 - `scripts/install-remote.sh`: curl/bash installer that clones the GitHub repo then runs the local installer.
-- `scripts/uninstall.sh`: LaunchAgent and binary cleanup.
-- `packaging/launchagent/com.quicksync.qsd.plist.in`: LaunchAgent template.
-- `packaging/homebrew/quicksync.rb`: starter Homebrew formula.
+- `scripts/uninstall.sh`: LaunchAgent and binary cleanup while preserving Linker state.
+- `scripts/lib/cleanup-legacy.sh`: guarded pre-0.2 daemon, command-link, and Application Support cleanup.
+- `scripts/tests/legacy-cleanup.sh`: isolated safety and idempotence tests for cleanup and managed links.
+- `scripts/tests/branding-residue.sh`: repository-wide legacy-branding gate.
+- `packaging/launchagent/com.linker.linkerd.plist.in`: LaunchAgent template.
+- `packaging/homebrew/linker.rb`: starter Homebrew formula.
 - `.github/workflows/ci.yml`: macOS CI for format, tests, and check.
 
 ## Known Defects and Risks
 
 - There is no GUI yet; all workflows are CLI based.
 - The sync policy is latest-modified-wins without version history or merge UI.
-- Older experimental workspace layouts are not migrated.
-- Homebrew formula requires a real GitHub release tarball SHA before stable `brew install quicksync` works.
+- Pre-0.2 application state is intentionally deleted during installation and is not migrated; source and target directories remain untouched.
+- Homebrew formula requires a real GitHub release tarball SHA before stable `brew install linker` works.
 - LaunchAgent install is macOS-user specific and may require manual review if Homebrew is used.
 - `/usr/local/bin` linking may require `sudo` on machines where the directory is owned by `root`.
 - The daemon watches configured source/target roots and also performs a 5-minute reconciliation pass; very large trees may need future scan optimization.
@@ -46,5 +49,9 @@ Last local verification:
 ```bash
 cargo test --workspace --all-targets
 cargo check --workspace --all-targets
-bash -n scripts/install.sh scripts/uninstall.sh scripts/install-remote.sh
+bash -n scripts/install.sh scripts/uninstall.sh scripts/install-remote.sh scripts/lib/cleanup-legacy.sh scripts/tests/legacy-cleanup.sh scripts/tests/branding-residue.sh
+bash scripts/tests/legacy-cleanup.sh
+bash scripts/tests/branding-residue.sh
+ruby -c packaging/homebrew/linker.rb
+plutil -lint packaging/launchagent/com.linker.linkerd.plist.in
 ```

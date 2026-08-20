@@ -12,7 +12,7 @@ target/
 # Isolated development worktrees
 .worktrees/
 
-# Local runtime state should live under ~/Library/Application Support/QuickSync,
+# Local runtime state should live under ~/Library/Application Support/Linker,
 # but keep these ignored if tests create temporary local state.
 *.sqlite
 *.sqlite-shm

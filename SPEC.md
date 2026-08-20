@@ -1,15 +1,15 @@
-# QuickSync MVP Technical Design
+# Linker MVP Technical Design
 
 ## Design Goal
 
-Build the smallest reliable version of QuickSync:
+Build the smallest reliable version of Linker:
 
-1. `qs add <source-directory> <target-parent-directory>` creates a directory association.
+1. `linker add <source-directory> <target-parent-directory>` creates a directory association.
 2. A background daemon automatically keeps the source directory and target directory in sync.
 3. Users can customize exclude rules.
 4. If both sides differ, the newest modified file wins automatically.
 
-There is no global QuickSync workspace and no `qs init` step.
+There is no global Linker workspace and no `linker init` step.
 
 ## Architecture
 
@@ -18,7 +18,7 @@ Source Directory
     ^
     | scan/watch/copy
     v
-qsd
+linkerd
     ^
     | scan/watch/copy
     v
@@ -27,7 +27,7 @@ Target Parent Directory / <source-directory-name>
 
 The sync model is bidirectional mirror copy.
 
-QuickSync does not:
+Linker does not:
 
 - move the source directory
 - create symlinks
@@ -39,10 +39,10 @@ QuickSync does not:
 For this command:
 
 ```bash
-qs add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
+linker add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
 ```
 
-QuickSync stores:
+Linker stores:
 
 ```text
 source directory: ~/Documents/Notes
@@ -53,7 +53,7 @@ item name: Notes
 Local app state:
 
 ```text
-~/Library/Application Support/QuickSync/
+~/Library/Application Support/Linker/
 ├── state.sqlite
 ├── manifests/
 │   └── <name>.json
@@ -63,21 +63,21 @@ Local app state:
 └── tmp/
 ```
 
-No QuickSync control files are written into the source directory or target parent directory.
+No Linker control files are written into the source directory or target parent directory.
 
 ## MVP Commands
 
 ```text
-qs add <source-directory> <target-parent-directory> [--ignore-file <path>] [--exclude <pattern>]...
-qs rule <name> list
-qs rule <name> exclude <pattern>
-qs rule <name> include <pattern>
-qs list
-qs status
-qs sync [name]
-qs remove <name>
-qs delete <name>
-qs doctor
+linker add <source-directory> <target-parent-directory> [--ignore-file <path>] [--exclude <pattern>]...
+linker rule <name> list
+linker rule <name> exclude <pattern>
+linker rule <name> include <pattern>
+linker list
+linker status
+linker sync [name]
+linker remove <name>
+linker delete <name>
+linker doctor
 ```
 
 Command responsibilities:
@@ -104,7 +104,7 @@ Each item has one local manifest:
   "type": "directory",
   "source_path": "/Users/jason/code/demo",
   "target_path": "/Users/jason/Library/Mobile Documents/com~apple~CloudDocs/demo",
-  "rule_path": "/Users/jason/Library/Application Support/QuickSync/rules/demo.ignore",
+  "rule_path": "/Users/jason/Library/Application Support/Linker/rules/demo.ignore",
   "created_at": "2026-07-11T00:00:00Z",
   "updated_at": "2026-07-11T00:00:00Z"
 }
@@ -121,7 +121,7 @@ Notes:
 Use one SQLite database:
 
 ```text
-~/Library/Application Support/QuickSync/state.sqlite
+~/Library/Application Support/Linker/state.sqlite
 ```
 
 Minimum schema:
@@ -148,15 +148,15 @@ The database also stores exclude rules and per-file sync state.
 
 ## Rule Engine
 
-Default rules are empty. QuickSync does not automatically import `.gitignore` and does not apply forced template excludes.
+Default rules are empty. Linker does not automatically import `.gitignore` and does not apply forced template excludes.
 
 Each item has one plain-text rule file:
 
 ```text
-~/Library/Application Support/QuickSync/rules/<name>.ignore
+~/Library/Application Support/Linker/rules/<name>.ignore
 ```
 
-The file stores one rule per line. `--ignore-file`, repeated `--exclude`, and later `qs rule exclude` all produce the same kind of rule.
+The file stores one rule per line. `--ignore-file`, repeated `--exclude`, and later `linker rule exclude` all produce the same kind of rule.
 
 Implementation uses Rust's `ignore` crate and follows the same matching semantics as Git ignore files.
 
@@ -203,11 +203,11 @@ Inside an item:
 
 Item commands:
 
-- `remove` deletes local QuickSync association state and local metadata, but keeps source and target directories.
-- `delete` deletes local QuickSync association state, local metadata, and target directory.
+- `remove` deletes local Linker association state and local metadata, but keeps source and target directories.
+- `delete` deletes local Linker association state, local metadata, and target directory.
 - neither command deletes the source directory.
 
-Root source path missing pauses the item by marking an error; QuickSync should not automatically delete a root path.
+Root source path missing pauses the item by marking an error; Linker should not automatically delete a root path.
 
 ## Watcher and Scheduling
 
@@ -220,7 +220,7 @@ Scheduling:
 
 ```text
 file event -> debounce 2 seconds -> sync item
-manual qs sync -> sync immediately
+manual linker sync -> sync immediately
 periodic reconciliation -> every 5 minutes
 ```
 

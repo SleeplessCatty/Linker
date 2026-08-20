@@ -1,8 +1,8 @@
-# QuickSync Product Design
+# Linker Product Design
 
 ## Product Positioning
 
-QuickSync is a lightweight personal directory sync tool for macOS.
+Linker is a lightweight personal directory sync tool for macOS.
 
 It lets a user link an existing source directory to a target parent directory, then keeps the resulting target directory synced automatically. If the target parent is inside iCloud Drive, the synced directory is easy to view and edit on iPhone or iPad.
 
@@ -22,10 +22,10 @@ Everything else is secondary unless required to make those flows reliable.
 The user adds an association:
 
 ```bash
-qs add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs
+linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs
 ```
 
-QuickSync derives:
+Linker derives:
 
 ```text
 source directory: ~/code/demo
@@ -39,19 +39,19 @@ There are two real directories:
 Source Directory  <->  Target Directory
 ```
 
-QuickSync does not move the user's source directory and does not use symlinks or filesystem mounts.
+Linker does not move the user's source directory and does not use symlinks or filesystem mounts.
 
 ## MVP User Flows
 
 ### Add Directory
 
 ```bash
-qs add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs
+linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs
 ```
 
 Result:
 
-- creates a QuickSync item named `demo`
+- creates a Linker item named `demo`
 - creates or reuses the target directory
 - creates local manifest and rule files under Application Support
 - performs initial sync
@@ -59,14 +59,14 @@ Result:
 
 ### Customize Exclude Rules
 
-Default rule behavior is empty: QuickSync excludes nothing unless the user explicitly provides rules.
+Default rule behavior is empty: Linker excludes nothing unless the user explicitly provides rules.
 
 ```bash
-qs add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --ignore-file ~/code/demo/.qsyncignore
-qs add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --exclude node_modules/ --exclude dist/
-qs rule demo exclude tmp/
-qs rule demo list
-qs rule demo include tmp/
+linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --ignore-file ~/code/demo/.linkerignore
+linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --exclude node_modules/ --exclude dist/
+linker rule demo exclude tmp/
+linker rule demo list
+linker rule demo include tmp/
 ```
 
 When a new exclude rule is added, matching target files are removed, while source files are kept.
@@ -75,7 +75,7 @@ Rules use the same matching semantics as Git ignore files. A directory can have 
 
 ### Automatic Sync
 
-After `qs add`, the daemon watches both:
+After `linker add`, the daemon watches both:
 
 ```text
 source directory
@@ -97,44 +97,44 @@ The user should normally not need to run manual sync.
 
 ### Latest Modified Wins
 
-If both sides differ, QuickSync chooses the file with the newest modification time and copies it over the older side.
+If both sides differ, Linker chooses the file with the newest modification time and copies it over the older side.
 
 This is intentionally simple. MVP does not show a conflict review UI and does not attempt text merge.
 
 ### Remove and Delete
 
 ```bash
-qs remove demo
+linker remove demo
 ```
 
-Stops syncing the item and removes local QuickSync association metadata. It keeps the source directory and target directory.
+Stops syncing the item and removes local Linker association metadata. It keeps the source directory and target directory.
 
 ```bash
-qs delete demo
+linker delete demo
 ```
 
-Stops syncing the item, removes local QuickSync association metadata, and deletes the target directory. It never deletes the source directory.
+Stops syncing the item, removes local Linker association metadata, and deletes the target directory. It never deletes the source directory.
 
 ## MVP Command Set
 
 ```text
-qs add <source-directory> <target-parent-directory> [--ignore-file <path>] [--exclude <pattern>]...
-qs rule <name> list
-qs rule <name> exclude <pattern>
-qs rule <name> include <pattern>
-qs remove <name>
-qs delete <name>
-qs list
-qs status
-qs sync [name]
-qs doctor
+linker add <source-directory> <target-parent-directory> [--ignore-file <path>] [--exclude <pattern>]...
+linker rule <name> list
+linker rule <name> exclude <pattern>
+linker rule <name> include <pattern>
+linker remove <name>
+linker delete <name>
+linker list
+linker status
+linker sync [name]
+linker doctor
 ```
 
-`qs sync` is included mainly for testing and recovery. Normal use should rely on automatic sync.
+`linker sync` is included mainly for testing and recovery. Normal use should rely on automatic sync.
 
 ## Non-Goals for MVP
 
-QuickSync is not trying to be:
+Linker is not trying to be:
 
 - a Git replacement
 - a team collaboration tool
@@ -148,7 +148,7 @@ QuickSync is not trying to be:
 A user can add a folder:
 
 ```bash
-qs add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs
+linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs
 ```
 
 Then:
@@ -156,5 +156,5 @@ Then:
 - keep working in `~/code/demo`
 - see files directly in the target directory
 - edit target files from iPhone or iPad if the target parent is iCloud Drive
-- customize rules with `qs rule`
+- customize rules with `linker rule`
 - rely on latest-modified-wins without managing conflicts manually

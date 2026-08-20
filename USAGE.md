@@ -1,9 +1,9 @@
-# QuickSync Command Usage
+# Linker Command Usage
 
-QuickSync links a source directory to a target parent directory.
+Linker links a source directory to a target parent directory.
 
 ```bash
-qs add <source-directory> <target-parent-directory>
+linker add <source-directory> <target-parent-directory>
 ```
 
 If the source directory is `~/Documents/Notes`, the item name is `Notes`, and the target directory becomes:
@@ -12,7 +12,7 @@ If the source directory is `~/Documents/Notes`, the item name is `Notes`, and th
 <target-parent-directory>/Notes/
 ```
 
-There is no `qs init` step and no global QuickSync workspace.
+There is no `linker init` step and no global Linker workspace.
 
 ## Install
 
@@ -23,11 +23,11 @@ There is no `qs init` step and no global QuickSync workspace.
 Verify:
 
 ```bash
-qs doctor
-qs status
+linker doctor
+linker status
 ```
 
-The install script creates `/usr/local/bin/qs` and `/usr/local/bin/qsd` by default. This may ask for your administrator password.
+The install script creates `/usr/local/bin/linker` and `/usr/local/bin/linkerd` by default. This may ask for your administrator password.
 
 To install without command links:
 
@@ -38,13 +38,13 @@ To install without command links:
 Remote install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/QuickSync/main/scripts/install-remote.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/install-remote.sh | bash
 ```
 
 ## Add a Directory
 
 ```bash
-qs add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
+linker add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
 ```
 
 This creates or reuses:
@@ -53,30 +53,30 @@ This creates or reuses:
 ~/Library/Mobile Documents/com~apple~CloudDocs/Notes/
 ```
 
-The item name is always the source directory name. Names must be unique; QuickSync rejects a second association named `Notes`.
+The item name is always the source directory name. Names must be unique; Linker rejects a second association named `Notes`.
 
-The source and target directories must be separate. QuickSync rejects associations where one side contains the other.
+The source and target directories must be separate. Linker rejects associations where one side contains the other.
 
 ## Exclude Rules During Add
 
-By default, QuickSync creates an empty ignore file and excludes nothing. It does not read `.gitignore` automatically.
+By default, Linker creates an empty ignore file and excludes nothing. It does not read `.gitignore` automatically.
 
 Import rules from a file:
 
 ```bash
-qs add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --ignore-file ~/code/demo/.qsyncignore
+linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --ignore-file ~/code/demo/.linkerignore
 ```
 
 Add multiple rules inline:
 
 ```bash
-qs add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --exclude node_modules/ --exclude dist/
+linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --exclude node_modules/ --exclude dist/
 ```
 
 Combine both:
 
 ```bash
-qs add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --ignore-file ~/code/demo/.qsyncignore --exclude .env
+linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --ignore-file ~/code/demo/.linkerignore --exclude .env
 ```
 
 Rule syntax follows the same matching semantics as Git ignore files. The saved rule file is plain text: one rule per line.
@@ -84,8 +84,8 @@ Rule syntax follows the same matching semantics as Git ignore files. The saved r
 Rule and manifest files are stored locally:
 
 ```text
-~/Library/Application Support/QuickSync/rules/<name>.ignore
-~/Library/Application Support/QuickSync/manifests/<name>.json
+~/Library/Application Support/Linker/rules/<name>.ignore
+~/Library/Application Support/Linker/manifests/<name>.json
 ```
 
 ## Manage Exclude Rules
@@ -93,13 +93,13 @@ Rule and manifest files are stored locally:
 List all rules:
 
 ```bash
-qs rule demo list
+linker rule demo list
 ```
 
 Add one exclude rule:
 
 ```bash
-qs rule demo exclude tmp/
+linker rule demo exclude tmp/
 ```
 
 This immediately removes matching files from the target directory. It does not delete source files.
@@ -107,15 +107,15 @@ This immediately removes matching files from the target directory. It does not d
 Delete one exclude rule and allow a path to sync again:
 
 ```bash
-qs rule demo include tmp/
-qs sync demo
+linker rule demo include tmp/
+linker sync demo
 ```
 
 If `include` does not find a matching rule, it succeeds without changing the rule list.
 
 ## Sync
 
-The daemon normally syncs automatically after `qs add`.
+The daemon normally syncs automatically after `linker add`.
 
 Current automatic sync timing:
 
@@ -125,8 +125,8 @@ Current automatic sync timing:
 Manual sync is mainly for testing, recovery, or immediate verification:
 
 ```bash
-qs sync
-qs sync demo
+linker sync
+linker sync demo
 ```
 
 Conflict behavior is latest-modified-wins. If source and target copies differ, the side with the newer modification time overwrites the older side.
@@ -134,9 +134,9 @@ Conflict behavior is latest-modified-wins. If source and target copies differ, t
 ## Inspect Items
 
 ```bash
-qs list
-qs status
-qs doctor
+linker list
+linker status
+linker doctor
 ```
 
 `list` shows configured sync associations, item status, source path, target path, rule count, last sync time, and last error.
@@ -145,10 +145,10 @@ qs doctor
 
 ## Remove vs Delete
 
-Remove only the QuickSync association:
+Remove only the Linker association:
 
 ```bash
-qs remove demo
+linker remove demo
 ```
 
 This keeps:
@@ -156,12 +156,12 @@ This keeps:
 - the source directory
 - the target directory
 
-It deletes local QuickSync metadata for that association.
+It deletes local Linker metadata for that association.
 
-Delete the QuickSync association and target directory:
+Delete the Linker association and target directory:
 
 ```bash
-qs delete demo
+linker delete demo
 ```
 
 This keeps the source directory, but deletes:
@@ -175,7 +175,7 @@ This keeps the source directory, but deletes:
 Use an iCloud Drive folder as the target parent if you want mobile access:
 
 ```bash
-qs add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
+linker add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
 ```
 
 Then open `Notes` in iCloud Drive on iPhone or iPad. Edits made there are synced back to the source directory by the daemon.
@@ -189,6 +189,6 @@ If a target path is rejected, make sure the target parent is outside the source 
 If a file does not come back after removing a rule, run:
 
 ```bash
-qs sync <name>
-qs list
+linker sync <name>
+linker list
 ```

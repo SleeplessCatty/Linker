@@ -46,6 +46,25 @@ ensure_link_available() {
   return 1
 }
 
+install_managed_link() {
+  local link_path="$1"
+  local managed_target="$2"
+  local link_dir
+
+  ensure_link_available "${link_path}" "${managed_target}" || return 1
+  if [[ -L "${link_path}" && "$(readlink "${link_path}")" == "${managed_target}" ]]; then
+    return 0
+  fi
+
+  link_dir="$(dirname "${link_path}")"
+  if [[ -d "${link_dir}" && -w "${link_dir}" ]]; then
+    ln -s "${managed_target}" "${link_path}"
+  else
+    sudo mkdir -p "${link_dir}"
+    sudo ln -s "${managed_target}" "${link_path}"
+  fi
+}
+
 validate_cleanup_inputs() {
   local user_home="$1"
   local link_dir="$2"

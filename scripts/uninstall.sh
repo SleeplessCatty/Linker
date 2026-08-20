@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_SUPPORT_DIR="${HOME}/Library/Application Support/QuickSync"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/lib/cleanup-legacy.sh"
+
+APP_SUPPORT_DIR="${HOME}/Library/Application Support/Linker"
 BIN_DIR="${APP_SUPPORT_DIR}/bin"
 LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
-PLIST_LABEL="com.quicksync.qsd"
+PLIST_LABEL="com.linker.linkerd"
 PLIST_PATH="${LAUNCH_AGENTS_DIR}/${PLIST_LABEL}.plist"
 LINK_DIR="/usr/local/bin"
 REMOVE_LINKS=1
@@ -14,7 +17,7 @@ usage() {
 Usage: ./scripts/uninstall.sh [--link-dir <dir>] [--no-link]
 
 Options:
-  --link-dir <dir>  Remove qs/qsd symlinks from <dir>.
+  --link-dir <dir>  Remove linker/linkerd symlinks from <dir>.
                    Default: /usr/local/bin
   --no-link         Do not remove command symlinks.
   -h, --help       Show this help.
@@ -47,27 +50,25 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+cleanup_legacy_install "${HOME}" "${LINK_DIR}" "$(id -u)"
+
 launchctl bootout "gui/$(id -u)" "${PLIST_PATH}" >/dev/null 2>&1 || true
 
 rm -f "${PLIST_PATH}"
-rm -f "${BIN_DIR}/qs" "${BIN_DIR}/qsd"
+rm -f "${BIN_DIR}/linker" "${BIN_DIR}/linkerd"
 
 if [[ "${REMOVE_LINKS}" == "1" ]]; then
-  if [[ -w "${LINK_DIR}" ]]; then
-    rm -f "${LINK_DIR}/qs" "${LINK_DIR}/qsd"
-  else
-    echo "Removing command links from ${LINK_DIR} requires administrator permission."
-    sudo rm -f "${LINK_DIR}/qs" "${LINK_DIR}/qsd"
-  fi
+  remove_link_if_points_into "${LINK_DIR}/linker" "${BIN_DIR}"
+  remove_link_if_points_into "${LINK_DIR}/linkerd" "${BIN_DIR}"
 fi
 
 cat <<EOF
-QuickSync daemon uninstalled.
+Linker daemon uninstalled.
 
-Kept local QuickSync state and logs:
+Kept local Linker state and logs:
   ${APP_SUPPORT_DIR}
 
-To remove all QuickSync local state, run:
+To remove all Linker local state, run:
   rm -rf "${APP_SUPPORT_DIR}"
 
 This does not delete your synced local folders or iCloud mirror folders.

@@ -102,4 +102,28 @@ grep -F "bootout gui/501/com.quicksync.qsd" "${LINKER_TEST_LAUNCHCTL_LOG}" >/dev
 
 cleanup_legacy_install "${TEST_HOME}" "${LINK_DIR}" 501
 
+MANAGED_ROOT="${TEST_ROOT}/managed/bin"
+mkdir -p "${MANAGED_ROOT}"
+touch "${MANAGED_ROOT}/linker"
+
+ensure_link_available "${LINK_DIR}/linker" "${MANAGED_ROOT}/linker"
+ln -s "${MANAGED_ROOT}/linker" "${LINK_DIR}/linker"
+ensure_link_available "${LINK_DIR}/linker" "${MANAGED_ROOT}/linker"
+remove_link_if_points_into "${LINK_DIR}/linker" "${MANAGED_ROOT}"
+assert_missing "${LINK_DIR}/linker"
+
+install_managed_link "${LINK_DIR}/linker" "${MANAGED_ROOT}/linker"
+assert_exists "${LINK_DIR}/linker"
+[[ "$(readlink "${LINK_DIR}/linker")" == "${MANAGED_ROOT}/linker" ]] \
+  || fail "managed command link points to the wrong target"
+install_managed_link "${LINK_DIR}/linker" "${MANAGED_ROOT}/linker"
+
+ln -s "${EXTERNAL_BIN}" "${LINK_DIR}/qsd"
+if install_managed_link \
+  "${LINK_DIR}/qsd" "${MANAGED_ROOT}/linkerd" 2>> "${LINK_ERROR_LOG}"; then
+  fail "managed link installation replaced an unrelated command"
+fi
+[[ "$(readlink "${LINK_DIR}/qsd")" == "${EXTERNAL_BIN}" ]] \
+  || fail "unrelated command link changed during installation"
+
 echo "legacy cleanup tests passed"

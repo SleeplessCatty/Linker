@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="${QUICKSYNC_REPO_URL:-https://github.com/SleeplessCatty/QuickSync.git}"
-REF="${QUICKSYNC_REF:-main}"
+REPO_URL="${LINKER_REPO_URL:-https://github.com/SleeplessCatty/Linker.git}"
+REF="${LINKER_REF:-main}"
 
 usage() {
   cat <<EOF
-Usage: curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/QuickSync/main/scripts/install-remote.sh | bash -s -- [install options]
+Usage: curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/install-remote.sh | bash -s -- [install options]
 
 Environment:
-  QUICKSYNC_REPO_URL  Git repository to clone. Default: ${REPO_URL}
-  QUICKSYNC_REF       Branch, tag, or commit to install. Default: ${REF}
+  LINKER_REPO_URL  Git repository to clone. Default: ${REPO_URL}
+  LINKER_REF       Branch, tag, or commit to install. Default: ${REF}
 
 Install options are forwarded to scripts/install.sh, for example:
   --no-link
@@ -39,5 +39,5 @@ cleanup() {
 }
 trap cleanup EXIT
 
-git clone --depth 1 --branch "${REF}" "${REPO_URL}" "${tmp_dir}/QuickSync"
-exec "${tmp_dir}/QuickSync/scripts/install.sh" "$@"
+git clone --depth 1 --branch "${REF}" "${REPO_URL}" "${tmp_dir}/Linker"
+exec "${tmp_dir}/Linker/scripts/install.sh" "$@"

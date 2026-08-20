@@ -2,11 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_SUPPORT_DIR="${HOME}/Library/Application Support/QuickSync"
+source "${ROOT_DIR}/scripts/lib/cleanup-legacy.sh"
+
+APP_SUPPORT_DIR="${HOME}/Library/Application Support/Linker"
 BIN_DIR="${APP_SUPPORT_DIR}/bin"
 LOG_DIR="${APP_SUPPORT_DIR}/logs"
 LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
-PLIST_LABEL="com.quicksync.qsd"
+PLIST_LABEL="com.linker.linkerd"
 PLIST_PATH="${LAUNCH_AGENTS_DIR}/${PLIST_LABEL}.plist"
 PLIST_TEMPLATE="${ROOT_DIR}/packaging/launchagent/${PLIST_LABEL}.plist.in"
 LINK_DIR="/usr/local/bin"
@@ -16,11 +18,11 @@ usage() {
   cat <<EOF
 Usage: ./scripts/install.sh [--link-dir <dir>] [--no-link]
 
-Build and install qs/qsd under:
+Build and install linker/linkerd under:
   ${BIN_DIR}
 
 Options:
-  --link-dir <dir>  Create qs and qsd symlinks in <dir>.
+  --link-dir <dir>  Create linker and linkerd symlinks in <dir>.
                    Default: /usr/local/bin
   --no-link         Do not create command symlinks.
   -h, --help       Show this help.
@@ -53,28 +55,27 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-mkdir -p "${BIN_DIR}" "${LOG_DIR}" "${LAUNCH_AGENTS_DIR}"
-
 cd "${ROOT_DIR}"
 cargo build --release
 
-install -m 0755 "${ROOT_DIR}/target/release/qs" "${BIN_DIR}/qs"
-install -m 0755 "${ROOT_DIR}/target/release/qsd" "${BIN_DIR}/qsd"
+if [[ "${CREATE_LINKS}" == "1" ]]; then
+  ensure_link_available "${LINK_DIR}/linker" "${BIN_DIR}/linker"
+  ensure_link_available "${LINK_DIR}/linkerd" "${BIN_DIR}/linkerd"
+fi
+
+cleanup_legacy_install "${HOME}" "${LINK_DIR}" "$(id -u)"
+mkdir -p "${BIN_DIR}" "${LOG_DIR}" "${LAUNCH_AGENTS_DIR}"
+
+install -m 0755 "${ROOT_DIR}/target/release/linker" "${BIN_DIR}/linker"
+install -m 0755 "${ROOT_DIR}/target/release/linkerd" "${BIN_DIR}/linkerd"
 
 if [[ "${CREATE_LINKS}" == "1" ]]; then
-  if [[ -d "${LINK_DIR}" && -w "${LINK_DIR}" ]]; then
-    ln -sf "${BIN_DIR}/qs" "${LINK_DIR}/qs"
-    ln -sf "${BIN_DIR}/qsd" "${LINK_DIR}/qsd"
-  else
-    echo "Creating command links in ${LINK_DIR} requires administrator permission."
-    sudo mkdir -p "${LINK_DIR}"
-    sudo ln -sf "${BIN_DIR}/qs" "${LINK_DIR}/qs"
-    sudo ln -sf "${BIN_DIR}/qsd" "${LINK_DIR}/qsd"
-  fi
+  install_managed_link "${LINK_DIR}/linker" "${BIN_DIR}/linker"
+  install_managed_link "${LINK_DIR}/linkerd" "${BIN_DIR}/linkerd"
 fi
 
 sed \
-  -e "s#__QSD_PATH__#${BIN_DIR}/qsd#g" \
+  -e "s#__LINKERD_PATH__#${BIN_DIR}/linkerd#g" \
   -e "s#__LOG_DIR__#${LOG_DIR}#g" \
   -e "s#__APP_SUPPORT_DIR__#${APP_SUPPORT_DIR}#g" \
   "${PLIST_TEMPLATE}" > "${PLIST_PATH}"
@@ -84,18 +85,18 @@ launchctl bootstrap "gui/$(id -u)" "${PLIST_PATH}"
 launchctl kickstart -k "gui/$(id -u)/${PLIST_LABEL}"
 
 cat <<EOF
-QuickSync installed.
+Linker installed.
 
 Binaries:
-  ${BIN_DIR}/qs
-  ${BIN_DIR}/qsd
+  ${BIN_DIR}/linker
+  ${BIN_DIR}/linkerd
 
 LaunchAgent:
   ${PLIST_PATH}
 
 Logs:
-  ${LOG_DIR}/qsd.out.log
-  ${LOG_DIR}/qsd.err.log
+  ${LOG_DIR}/linkerd.out.log
+  ${LOG_DIR}/linkerd.err.log
 
 EOF
 
@@ -103,14 +104,14 @@ if [[ "${CREATE_LINKS}" == "1" ]]; then
   cat <<EOF
 
 Command links:
-  ${LINK_DIR}/qs -> ${BIN_DIR}/qs
-  ${LINK_DIR}/qsd -> ${BIN_DIR}/qsd
+  ${LINK_DIR}/linker -> ${BIN_DIR}/linker
+  ${LINK_DIR}/linkerd -> ${BIN_DIR}/linkerd
 EOF
 else
   cat <<EOF
 
 Command links were skipped.
-Add this to your shell profile if you want qs on PATH:
+Add this to your shell profile if you want linker on PATH:
   export PATH="\$PATH:${BIN_DIR}"
 EOF
 fi

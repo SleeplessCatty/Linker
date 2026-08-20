@@ -4,11 +4,11 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.quicksync.qsd</string>
+  <string>com.linker.linkerd</string>
 
   <key>ProgramArguments</key>
   <array>
-    <string>__QSD_PATH__</string>
+    <string>__LINKERD_PATH__</string>
   </array>
 
   <key>RunAtLoad</key>
@@ -18,10 +18,10 @@
   <true/>
 
   <key>StandardOutPath</key>
-  <string>__LOG_DIR__/qsd.out.log</string>
+  <string>__LOG_DIR__/linkerd.out.log</string>
 
   <key>StandardErrorPath</key>
-  <string>__LOG_DIR__/qsd.err.log</string>
+  <string>__LOG_DIR__/linkerd.err.log</string>
 
   <key>WorkingDirectory</key>
   <string>__APP_SUPPORT_DIR__</string>

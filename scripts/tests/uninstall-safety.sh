@@ -76,8 +76,11 @@ assert_exists "${PLIST_PATH}"
 assert_exists "${LINK_DIR}/linker"
 assert_exists "${LINK_DIR}/linkerd"
 
-for utility in basename dirname id readlink; do
+for utility in basename dirname id readlink sed stat; do
   ln -s "/usr/bin/${utility}" "${NO_LAUNCHCTL_BIN}/${utility}"
+done
+for utility in cat ls rm rmdir; do
+  ln -s "/bin/${utility}" "${NO_LAUNCHCTL_BIN}/${utility}"
 done
 
 set +e

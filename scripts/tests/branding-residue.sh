@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-LEGACY_PATTERN='QuickSync|qsync|(^|[^[:alnum:]_])qs([^[:alnum:]_]|$)|(^|[^[:alnum:]_])qsd([^[:alnum:]_]|$)|com\.quicksync|QUICKSYNC_'
+LEGACY_PATTERN='QuickSync|qsync|(^|[^[:alnum:]])qs([^[:alnum:]]|$)|(^|[^[:alnum:]])qsd([^[:alnum:]]|$)|com\.quicksync|QUICKSYNC_'
 
 MATCHES="$(
   git -C "${ROOT_DIR}" grep -n -I -i -E "${LEGACY_PATTERN}" -- \

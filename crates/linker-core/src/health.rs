@@ -139,7 +139,7 @@ pub fn doctor_report() -> DoctorReport {
 }
 
 pub fn daemon_health() -> DaemonHealth {
-    let binary_path = qsd_binary_path();
+    let binary_path = linkerd_binary_path();
     let installed = binary_path.as_ref().is_some_and(|path| path.exists());
     let running = is_daemon_lock_held();
 
@@ -150,7 +150,7 @@ pub fn daemon_health() -> DaemonHealth {
     }
 }
 
-fn qsd_binary_path() -> Option<PathBuf> {
+fn linkerd_binary_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     let candidate = dir.join("linkerd");

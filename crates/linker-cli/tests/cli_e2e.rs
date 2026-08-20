@@ -32,10 +32,10 @@ impl Sandbox {
         }
     }
 
-    fn qs(&self) -> Command {
-        let mut cmd = Command::cargo_bin("qs").expect("qs bin");
-        cmd.env("QUICKSYNC_APP_SUPPORT_DIR", &self.app_support);
-        cmd.env_remove("QUICKSYNC_ICLOUD_DIR");
+    fn linker(&self) -> Command {
+        let mut cmd = Command::cargo_bin("linker").expect("linker bin");
+        cmd.env("LINKER_APP_SUPPORT_DIR", &self.app_support);
+        cmd.env("HOME", self._tmp.path());
         cmd
     }
 
@@ -63,13 +63,25 @@ impl Sandbox {
 }
 
 #[test]
+fn reports_linker_name_and_version() {
+    let sandbox = Sandbox::new();
+
+    sandbox
+        .linker()
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(pred_contains("linker 0.2.0"));
+}
+
+#[test]
 fn add_list_status_and_remove_item_keep_source_and_target() {
     let sandbox = Sandbox::new();
     let source = sandbox.source_dir("demo");
     write_file(&source.join("README.md"), "hello");
 
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             source.to_str().unwrap(),
@@ -89,7 +101,7 @@ fn add_list_status_and_remove_item_keep_source_and_target() {
     assert!(sandbox.rule_path("demo").exists());
 
     sandbox
-        .qs()
+        .linker()
         .arg("list")
         .assert()
         .success()
@@ -104,7 +116,7 @@ fn add_list_status_and_remove_item_keep_source_and_target() {
         .stdout(pred_contains("rules: 0"));
 
     sandbox
-        .qs()
+        .linker()
         .arg("status")
         .assert()
         .success()
@@ -114,7 +126,7 @@ fn add_list_status_and_remove_item_keep_source_and_target() {
         .stdout(predicates::str::contains("target:").not().from_utf8());
 
     sandbox
-        .qs()
+        .linker()
         .args(["remove", "demo"])
         .assert()
         .success()
@@ -137,7 +149,7 @@ fn list_separates_multiple_items_and_emphasizes_names() {
     write_file(&beta.join("b.txt"), "b");
 
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             alpha.to_str().unwrap(),
@@ -146,7 +158,7 @@ fn list_separates_multiple_items_and_emphasizes_names() {
         .assert()
         .success();
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             beta.to_str().unwrap(),
@@ -156,7 +168,7 @@ fn list_separates_multiple_items_and_emphasizes_names() {
         .success();
 
     sandbox
-        .qs()
+        .linker()
         .arg("list")
         .assert()
         .success()
@@ -173,7 +185,7 @@ fn delete_removes_target_but_keeps_source() {
     write_file(&source.join("README.md"), "hello");
 
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             source.to_str().unwrap(),
@@ -183,7 +195,7 @@ fn delete_removes_target_but_keeps_source() {
         .success();
 
     sandbox
-        .qs()
+        .linker()
         .args(["delete", "demo"])
         .assert()
         .success()
@@ -205,7 +217,7 @@ fn add_defaults_to_empty_ignore_and_can_use_ignore_file_or_inline_excludes() {
     write_file(&source.join("node_modules/pkg/index.js"), "pkg");
 
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             source.to_str().unwrap(),
@@ -227,7 +239,7 @@ fn add_defaults_to_empty_ignore_and_can_use_ignore_file_or_inline_excludes() {
     write_file(&ignore_file, "dist/\ntmp/\n");
 
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             second.to_str().unwrap(),
@@ -252,7 +264,7 @@ fn add_defaults_to_empty_ignore_and_can_use_ignore_file_or_inline_excludes() {
     );
 
     sandbox
-        .qs()
+        .linker()
         .args(["rule", "second", "list"])
         .assert()
         .success()
@@ -261,14 +273,14 @@ fn add_defaults_to_empty_ignore_and_can_use_ignore_file_or_inline_excludes() {
         .stdout(pred_contains("tmp/"));
 
     sandbox
-        .qs()
+        .linker()
         .args(["rule", "second", "include", "dist/"])
         .assert()
         .success()
         .stdout(pred_contains("rule included: dist/"))
         .stdout(pred_contains("rules: 1"));
 
-    sandbox.qs().args(["sync", "second"]).assert().success();
+    sandbox.linker().args(["sync", "second"]).assert().success();
     assert_eq!(
         read_file(&sandbox.item_path("second").join("dist/bundle.js")),
         "bundle"
@@ -287,7 +299,7 @@ fn duplicate_directory_name_is_rejected() {
     write_file(&first.join("README.md"), "hello");
 
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             first.to_str().unwrap(),
@@ -297,7 +309,7 @@ fn duplicate_directory_name_is_rejected() {
         .success();
 
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             second.to_str().unwrap(),
@@ -314,7 +326,7 @@ fn nested_or_same_source_and_target_is_rejected() {
     let source = sandbox.source_dir("demo");
 
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             source.to_str().unwrap(),
@@ -333,7 +345,7 @@ fn rule_exclude_prunes_target_and_rule_include_restores_after_sync() {
     write_file(&source.join("tmp/cache.txt"), "cache");
 
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             source.to_str().unwrap(),
@@ -346,7 +358,7 @@ fn rule_exclude_prunes_target_and_rule_include_restores_after_sync() {
     assert!(item_dir.join("tmp/cache.txt").exists());
 
     sandbox
-        .qs()
+        .linker()
         .args(["rule", "demo", "exclude", "tmp/"])
         .assert()
         .success()
@@ -357,7 +369,7 @@ fn rule_exclude_prunes_target_and_rule_include_restores_after_sync() {
     assert_eq!(read_file(&sandbox.rule_path("demo")), "tmp/\n");
 
     sandbox
-        .qs()
+        .linker()
         .args(["rule", "demo", "exclude", "tmp/"])
         .assert()
         .success()
@@ -365,24 +377,24 @@ fn rule_exclude_prunes_target_and_rule_include_restores_after_sync() {
     assert_eq!(read_file(&sandbox.rule_path("demo")), "tmp/\n");
 
     sandbox
-        .qs()
+        .linker()
         .args(["rule", "demo", "list"])
         .assert()
         .success()
         .stdout(pred_contains("tmp/"));
 
     sandbox
-        .qs()
+        .linker()
         .args(["rule", "demo", "include", "tmp/"])
         .assert()
         .success()
         .stdout(pred_contains("rule included: tmp/"));
 
-    sandbox.qs().args(["sync", "demo"]).assert().success();
+    sandbox.linker().args(["sync", "demo"]).assert().success();
     assert_eq!(read_file(&item_dir.join("tmp/cache.txt")), "cache");
 
     sandbox
-        .qs()
+        .linker()
         .args(["rule", "demo", "include", "missing/"])
         .assert()
         .success()
@@ -397,7 +409,7 @@ fn sync_copies_both_directions_and_latest_modified_wins() {
     write_file(&source.join("local.txt"), "local");
 
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             source.to_str().unwrap(),
@@ -410,7 +422,7 @@ fn sync_copies_both_directions_and_latest_modified_wins() {
 
     write_file(&source.join("second.txt"), "from source");
     sandbox
-        .qs()
+        .linker()
         .args(["sync", "demo"])
         .assert()
         .success()
@@ -419,7 +431,7 @@ fn sync_copies_both_directions_and_latest_modified_wins() {
 
     write_file(&item_dir.join("target.txt"), "from target");
     sandbox
-        .qs()
+        .linker()
         .args(["sync", "demo"])
         .assert()
         .success()
@@ -427,14 +439,14 @@ fn sync_copies_both_directions_and_latest_modified_wins() {
     assert_eq!(read_file(&source.join("target.txt")), "from target");
 
     write_file(&source.join("winner.txt"), "old source");
-    sandbox.qs().args(["sync", "demo"]).assert().success();
+    sandbox.linker().args(["sync", "demo"]).assert().success();
 
     write_file(&source.join("winner.txt"), "older source edit");
     write_file(&item_dir.join("winner.txt"), "newer target edit");
     set_mtime(&source.join("winner.txt"), 100);
     set_mtime(&item_dir.join("winner.txt"), 200);
 
-    sandbox.qs().args(["sync", "demo"]).assert().success();
+    sandbox.linker().args(["sync", "demo"]).assert().success();
     assert_eq!(read_file(&source.join("winner.txt")), "newer target edit");
 }
 
@@ -445,7 +457,7 @@ fn sync_deletes_inner_file_from_other_side() {
     write_file(&source.join("src/a.txt"), "a");
 
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             source.to_str().unwrap(),
@@ -459,7 +471,7 @@ fn sync_deletes_inner_file_from_other_side() {
 
     fs::remove_file(source.join("src/a.txt")).expect("remove source");
     sandbox
-        .qs()
+        .linker()
         .args(["sync", "demo"])
         .assert()
         .success()
@@ -472,7 +484,7 @@ fn doctor_reports_isolated_environment_health() {
     let sandbox = Sandbox::new();
 
     sandbox
-        .qs()
+        .linker()
         .arg("doctor")
         .assert()
         .success()
@@ -487,14 +499,14 @@ fn errors_include_actionable_hints() {
     let source = sandbox.source_dir("demo");
 
     sandbox
-        .qs()
+        .linker()
         .args(["sync", "missing"])
         .assert()
         .failure()
-        .stderr(pred_contains("run `qs list`"));
+        .stderr(pred_contains("run `linker list`"));
 
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             sandbox.sources.join("nope").to_str().unwrap(),
@@ -507,7 +519,7 @@ fn errors_include_actionable_hints() {
     let file = sandbox.sources.join("file.md");
     write_file(&file, "file");
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             file.to_str().unwrap(),
@@ -518,14 +530,14 @@ fn errors_include_actionable_hints() {
         .stderr(pred_contains("path is not a directory"));
 
     sandbox
-        .qs()
+        .linker()
         .args(["rule", "missing", "exclude", ""])
         .assert()
         .failure()
         .stderr(pred_contains("invalid rule pattern"));
 
     sandbox
-        .qs()
+        .linker()
         .args([
             "add",
             source.to_str().unwrap(),
@@ -542,8 +554,12 @@ fn errors_include_actionable_hints() {
 fn help_describes_core_commands_and_rule_behavior() {
     let sandbox = Sandbox::new();
 
-    let no_args = sandbox.qs().output().expect("qs without args");
-    let with_help = sandbox.qs().arg("--help").output().expect("qs --help");
+    let no_args = sandbox.linker().output().expect("linker without args");
+    let with_help = sandbox
+        .linker()
+        .arg("--help")
+        .output()
+        .expect("linker --help");
     assert!(no_args.status.success());
     assert!(with_help.status.success());
     assert_eq!(no_args.stdout, with_help.stdout);
@@ -551,15 +567,15 @@ fn help_describes_core_commands_and_rule_behavior() {
     assert!(with_help.stderr.is_empty());
 
     sandbox
-        .qs()
+        .linker()
         .assert()
         .success()
-        .stdout(pred_contains("Usage: qs <COMMAND>"))
+        .stdout(pred_contains("Usage: linker <COMMAND>"))
         .stdout(pred_contains("Common workflow:"))
-        .stdout(predicates::str::contains("qs init").not().from_utf8());
+        .stdout(predicates::str::contains("linker init").not().from_utf8());
 
     sandbox
-        .qs()
+        .linker()
         .arg("--help")
         .assert()
         .success()
@@ -568,7 +584,7 @@ fn help_describes_core_commands_and_rule_behavior() {
         .stdout(pred_contains("delete stops tracking"));
 
     sandbox
-        .qs()
+        .linker()
         .args(["add", "--help"])
         .assert()
         .success()
@@ -580,7 +596,7 @@ fn help_describes_core_commands_and_rule_behavior() {
         .stdout(pred_contains("--ignore-file"));
 
     sandbox
-        .qs()
+        .linker()
         .args(["rule", "demo", "exclude", "--help"])
         .assert()
         .success()
@@ -588,13 +604,13 @@ fn help_describes_core_commands_and_rule_behavior() {
         .stdout(pred_contains("source files are kept"));
 
     sandbox
-        .qs()
+        .linker()
         .args(["rule", "demo", "include", "--help"])
         .assert()
         .success()
         .stdout(pred_contains("Include a path again"))
         .stdout(pred_contains("If no existing rule matches"))
-        .stdout(pred_contains("next qs sync"));
+        .stdout(pred_contains("next linker sync"));
 }
 
 fn pred_contains(text: &str) -> impl Predicate<[u8]> {

@@ -1,20 +1,20 @@
 [package]
-name = "qsync-daemon"
+name = "linker-cli"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "qsd"
+name = "linker"
 path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
-fs2.workspace = true
-notify.workspace = true
-qsync-core = { path = "../qsync-core" }
+linker-core = { path = "../linker-core" }
 
 [dev-dependencies]
 assert_cmd.workspace = true
+filetime.workspace = true
 predicates.workspace = true
+rusqlite.workspace = true
 tempfile.workspace = true

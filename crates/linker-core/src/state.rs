@@ -4,7 +4,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::rules::Rule;
-use crate::{QsyncError, Result};
+use crate::{LinkerError, Result};
 
 #[derive(Debug, Clone)]
 pub struct Item {
@@ -160,7 +160,7 @@ impl StateDb {
 
     pub fn insert_item(&mut self, item: NewItem<'_>) -> Result<()> {
         if self.name_exists(item.name)? {
-            return Err(QsyncError::ItemExists(item.name.to_string()));
+            return Err(LinkerError::ItemExists(item.name.to_string()));
         }
 
         let now = Utc::now().timestamp();
@@ -252,7 +252,7 @@ impl StateDb {
         self.list_items()?
             .into_iter()
             .find(|item| item.name == name || item.id == name)
-            .ok_or_else(|| QsyncError::ItemNotFound(name.to_string()))
+            .ok_or_else(|| LinkerError::ItemNotFound(name.to_string()))
     }
 
     pub fn remove_item(&self, name: &str) -> Result<Item> {

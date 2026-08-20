@@ -11,7 +11,7 @@ use walkdir::{DirEntry, WalkDir};
 
 use crate::rules::Rule;
 use crate::state::{FileStateUpdate, Item, StateDb, StoredFileState};
-use crate::{QsyncError, Result};
+use crate::{LinkerError, Result};
 
 #[derive(Debug, Clone)]
 pub struct SyncSummary {
@@ -39,7 +39,7 @@ pub fn sync_item(db: &StateDb, item: &Item, rules: &[Rule]) -> Result<SyncSummar
 
     if !local_root.exists() {
         db.mark_item_error(&item.id, "local root is missing")?;
-        return Err(QsyncError::PathMissing(local_root));
+        return Err(LinkerError::PathMissing(local_root));
     }
     if !cloud_root.exists() {
         if is_file {
@@ -242,11 +242,11 @@ fn build_matcher(root: &Path, rules: &[Rule]) -> Result<Gitignore> {
     for rule in rules {
         builder
             .add_line(None, &rule.pattern)
-            .map_err(|err| QsyncError::Rule(err.to_string()))?;
+            .map_err(|err| LinkerError::Rule(err.to_string()))?;
     }
     builder
         .build()
-        .map_err(|err| QsyncError::Rule(err.to_string()))
+        .map_err(|err| LinkerError::Rule(err.to_string()))
 }
 
 fn matcher_root(path: &Path, is_file: bool) -> PathBuf {
@@ -281,12 +281,12 @@ fn scan_file_item(
         return Ok(files);
     }
     if !path.is_file() {
-        return Err(QsyncError::NotFile(path.to_path_buf()));
+        return Err(LinkerError::NotFile(path.to_path_buf()));
     }
 
     let rel_for_match = path
         .strip_prefix(matcher_root)
-        .map_err(|err| QsyncError::StripPrefix(err.to_string()))?;
+        .map_err(|err| LinkerError::StripPrefix(err.to_string()))?;
     if matcher
         .matched_path_or_any_parents(rel_for_match, false)
         .is_ignore()
@@ -352,13 +352,13 @@ fn scan_one(path: &Path, root: &Path) -> Result<FileMeta> {
     let metadata = fs::metadata(path)?;
     let rel_path = path
         .strip_prefix(root)
-        .map_err(|err| QsyncError::StripPrefix(err.to_string()))?
+        .map_err(|err| LinkerError::StripPrefix(err.to_string()))?
         .to_string_lossy()
         .replace('\\', "/");
     let mtime = metadata
         .modified()?
         .duration_since(UNIX_EPOCH)
-        .map_err(|err| QsyncError::Timestamp(err.to_string()))?
+        .map_err(|err| LinkerError::Timestamp(err.to_string()))?
         .as_secs() as i64;
     let size = metadata.len() as i64;
     let hash = hash_file(path)?;
@@ -394,7 +394,7 @@ fn copy_file(source: &FileMeta, target: &Path) -> Result<()> {
     }
 
     let tmp = target.with_extension(format!(
-        "{}qsync-tmp-{}",
+        "{}linker-tmp-{}",
         target
             .extension()
             .map(|ext| format!("{}.", ext.to_string_lossy()))
@@ -575,8 +575,8 @@ mod tests {
     fn syncs_single_file_item() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let local = tmp.path().join("note.md");
-        let cloud = tmp.path().join("QuickSync/note.md");
-        let rule_path = tmp.path().join(".quicksync/rules/note.md.ignore");
+        let cloud = tmp.path().join("Linker/note.md");
+        let rule_path = tmp.path().join(".linker/rules/note.md.ignore");
         write_file(&local, "local", 100);
 
         let db_path = tmp.path().join("state.sqlite");

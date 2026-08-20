@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use assert_cmd::prelude::*;
-use qsync_core::ops::{self, AddOptions};
+use linker_core::ops::{self, AddOptions};
 use tempfile::TempDir;
 
 struct Sandbox {
@@ -32,10 +32,10 @@ impl Sandbox {
         }
     }
 
-    fn qsd(&self) -> Command {
-        let mut cmd = Command::cargo_bin("qsd").expect("qsd bin");
-        cmd.env("QUICKSYNC_APP_SUPPORT_DIR", &self.app_support);
-        cmd.env_remove("QUICKSYNC_ICLOUD_DIR");
+    fn linkerd(&self) -> Command {
+        let mut cmd = Command::cargo_bin("linkerd").expect("linkerd bin");
+        cmd.env("LINKER_APP_SUPPORT_DIR", &self.app_support);
+        cmd.env("HOME", self._tmp.path());
         cmd
     }
 
@@ -49,18 +49,31 @@ fn daemon_once_without_items_succeeds() {
     let sandbox = Sandbox::new();
 
     sandbox
-        .qsd()
+        .linkerd()
         .arg("--once")
         .assert()
         .success()
-        .stderr(predicates::str::contains("qsd watching 0 item(s)"));
+        .stderr(predicates::str::contains("linkerd watching 0 item(s)"));
+}
+
+#[test]
+fn daemon_help_uses_linkerd_name() {
+    let sandbox = Sandbox::new();
+
+    sandbox
+        .linkerd()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("linkerd"))
+        .stdout(predicates::str::contains("Linker background daemon"));
 }
 
 #[test]
 fn daemon_once_syncs_existing_item() {
     let sandbox = Sandbox::new();
-    std::env::set_var("QUICKSYNC_APP_SUPPORT_DIR", &sandbox.app_support);
-    std::env::remove_var("QUICKSYNC_ICLOUD_DIR");
+    std::env::set_var("HOME", sandbox._tmp.path());
+    std::env::set_var("LINKER_APP_SUPPORT_DIR", &sandbox.app_support);
 
     write_file(&sandbox.source.join("initial.txt"), "initial");
     ops::add_item(AddOptions {
@@ -74,11 +87,11 @@ fn daemon_once_syncs_existing_item() {
     write_file(&sandbox.source.join("daemon.txt"), "daemon");
 
     sandbox
-        .qsd()
+        .linkerd()
         .arg("--once")
         .assert()
         .success()
-        .stderr(predicates::str::contains("qsd startup synced demo"));
+        .stderr(predicates::str::contains("linkerd startup synced demo"));
 
     assert_eq!(read_file(&sandbox.item_dir().join("daemon.txt")), "daemon");
 }

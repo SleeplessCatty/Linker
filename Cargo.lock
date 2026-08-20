@@ -627,6 +627,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "linker-cli"
+version = "0.2.0"
+dependencies = [
+ "assert_cmd",
+ "clap",
+ "filetime",
+ "linker-core",
+ "predicates",
+ "rusqlite",
+ "tempfile",
+]
+
+[[package]]
+name = "linker-core"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "filetime",
+ "fs2",
+ "ignore",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
+name = "linker-daemon"
+version = "0.2.0"
+dependencies = [
+ "assert_cmd",
+ "clap",
+ "fs2",
+ "linker-core",
+ "notify",
+ "predicates",
+ "tempfile",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -761,50 +805,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "qsync-cli"
-version = "0.1.0"
-dependencies = [
- "assert_cmd",
- "clap",
- "filetime",
- "predicates",
- "qsync-core",
- "rusqlite",
- "tempfile",
-]
-
-[[package]]
-name = "qsync-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "filetime",
- "fs2",
- "ignore",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "uuid",
- "walkdir",
-]
-
-[[package]]
-name = "qsync-daemon"
-version = "0.1.0"
-dependencies = [
- "assert_cmd",
- "clap",
- "fs2",
- "notify",
- "predicates",
- "qsync-core",
- "tempfile",
 ]
 
 [[package]]

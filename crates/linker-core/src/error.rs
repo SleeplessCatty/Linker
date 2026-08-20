@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
-pub enum QsyncError {
+pub enum LinkerError {
     #[error("home directory could not be resolved")]
     HomeDirMissing,
 
@@ -54,4 +54,4 @@ pub enum QsyncError {
     Json(#[from] serde_json::Error),
 }
 
-pub type Result<T> = std::result::Result<T, QsyncError>;
+pub type Result<T> = std::result::Result<T, LinkerError>;

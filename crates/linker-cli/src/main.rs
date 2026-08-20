@@ -1,20 +1,20 @@
 use clap::{CommandFactory, Parser, Subcommand};
-use qsync_core::health::CheckStatus;
-use qsync_core::ops::{self, AddOptions};
-use qsync_core::{QsyncError, Result};
+use linker_core::health::CheckStatus;
+use linker_core::ops::{self, AddOptions};
+use linker_core::{LinkerError, Result};
 
 #[derive(Debug, Parser)]
-#[command(name = "qs")]
+#[command(name = "linker")]
 #[command(version)]
 #[command(about = "Lightweight iCloud-backed selective sync for macOS")]
 #[command(
-    long_about = "QuickSync links one source directory to one target parent directory. The target directory is created as <target-parent>/<source-directory-name>, and the source directory name is used as the item name for sync, rules, remove, and delete."
+    long_about = "Linker links one source directory to one target parent directory. The target directory is created as <target-parent>/<source-directory-name>, and the source directory name is used as the item name for sync, rules, remove, and delete."
 )]
 #[command(after_help = "Common workflow:
-  qs add ~/Documents/Notes ~/Library/Mobile\\ Documents/com~apple~CloudDocs
-  qs rule Notes exclude tmp/
-  qs sync Notes
-  qs status
+  linker add ~/Documents/Notes ~/Library/Mobile\\ Documents/com~apple~CloudDocs
+  linker rule Notes exclude tmp/
+  linker sync Notes
+  linker status
 
 Important:
   remove stops tracking but keeps both source and target directories.
@@ -27,14 +27,14 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    #[command(about = "Add a source directory to QuickSync")]
+    #[command(about = "Add a source directory to Linker")]
     #[command(
-        long_about = "Add a source directory to QuickSync, create or reuse the target directory at <target-parent-directory>/<source-directory-name>, and run the initial bidirectional sync.\n\nBy default no files are excluded. QuickSync does not import .gitignore unless you explicitly pass it through --ignore-file."
+        long_about = "Add a source directory to Linker, create or reuse the target directory at <target-parent-directory>/<source-directory-name>, and run the initial bidirectional sync.\n\nBy default no files are excluded. Linker does not import .gitignore unless you explicitly pass it through --ignore-file."
     )]
     #[command(after_help = "Examples:
-  qs add ~/Documents/Notes ~/Library/Mobile\\ Documents/com~apple~CloudDocs
-  qs add ~/code/demo ~/Library/Mobile\\ Documents/com~apple~CloudDocs --ignore-file ~/code/demo/.qsyncignore
-  qs add ~/code/demo ~/Library/Mobile\\ Documents/com~apple~CloudDocs --exclude node_modules/ --exclude dist/")]
+  linker add ~/Documents/Notes ~/Library/Mobile\\ Documents/com~apple~CloudDocs
+  linker add ~/code/demo ~/Library/Mobile\\ Documents/com~apple~CloudDocs --ignore-file ~/code/demo/.linkerignore
+  linker add ~/code/demo ~/Library/Mobile\\ Documents/com~apple~CloudDocs --exclude node_modules/ --exclude dist/")]
     Add {
         #[arg(help = "Source directory to sync")]
         source_directory: String,
@@ -55,36 +55,36 @@ enum Command {
     },
     #[command(about = "List, exclude, or include paths for an item")]
     #[command(
-        long_about = "Manage gitignore-style exclude rules for a synced item. Rules are stored under QuickSync Application Support and use the same matching semantics as Git ignore files. The rule file is plain text: one rule per line.\n\nrule list shows all rules. rule exclude adds one rule and removes matching files from the target directory immediately, but never deletes source files. rule include removes one matching rule; if no rule matches, it is ignored. The next sync can restore matching source content to the target directory."
+        long_about = "Manage gitignore-style exclude rules for a synced item. Rules are stored under Linker Application Support and use the same matching semantics as Git ignore files. The rule file is plain text: one rule per line.\n\nrule list shows all rules. rule exclude adds one rule and removes matching files from the target directory immediately, but never deletes source files. rule include removes one matching rule; if no rule matches, it is ignored. The next sync can restore matching source content to the target directory."
     )]
     #[command(after_help = "Examples:
-  qs rule demo list
-  qs rule demo exclude tmp/
-  qs rule demo include tmp/")]
+  linker rule demo list
+  linker rule demo exclude tmp/
+  linker rule demo include tmp/")]
     Rule {
         #[arg(help = "Configured item name or internal item id")]
         name: String,
         #[command(subcommand)]
         command: RuleCommand,
     },
-    #[command(about = "List configured QuickSync items")]
+    #[command(about = "List configured Linker items")]
     #[command(
         long_about = "List configured directory associations with their item name, status, source directory, and target directory."
     )]
     List,
     #[command(about = "Show background daemon status")]
     #[command(
-        long_about = "Show only the background daemon installation and running state. Use `qs list` to inspect configured directory associations and sync item state."
+        long_about = "Show only the background daemon installation and running state. Use `linker list` to inspect configured directory associations and sync item state."
     )]
     Status,
     #[command(about = "Run environment health checks")]
     #[command(
-        long_about = "Check QuickSync application support storage, state database access, configured directory associations, and daemon availability."
+        long_about = "Check Linker application support storage, state database access, configured directory associations, and daemon availability."
     )]
     Doctor,
     #[command(about = "Run one manual sync pass")]
     #[command(
-        long_about = "Run one manual sync pass for all items or one named item. Normal usage should rely on qsd automatic syncing; this command is mainly for immediate verification and recovery."
+        long_about = "Run one manual sync pass for all items or one named item. Normal usage should rely on linkerd automatic syncing; this command is mainly for immediate verification and recovery."
     )]
     Sync {
         #[arg(help = "Optional item name or internal item id")]
@@ -92,7 +92,7 @@ enum Command {
     },
     #[command(about = "Stop syncing an item but keep both directories")]
     #[command(
-        long_about = "Remove the local QuickSync association for an item. This keeps the source directory and target directory, but removes QuickSync's local rule and manifest files for the association."
+        long_about = "Remove the local Linker association for an item. This keeps the source directory and target directory, but removes Linker's local rule and manifest files for the association."
     )]
     Remove {
         #[arg(help = "Item name or internal item id")]
@@ -100,7 +100,7 @@ enum Command {
     },
     #[command(about = "Stop syncing an item and delete the target directory")]
     #[command(
-        long_about = "Delete the local QuickSync association, local rule and manifest files, and the target directory. The source directory is never deleted."
+        long_about = "Delete the local Linker association, local rule and manifest files, and the target directory. The source directory is never deleted."
     )]
     Delete {
         #[arg(help = "Item name or internal item id")]
@@ -120,7 +120,7 @@ enum RuleCommand {
     },
     #[command(about = "Include a path again by removing an exclude rule")]
     #[command(
-        long_about = "Include a path again by removing one matching exclude rule. If no existing rule matches, the command succeeds without changing rules. Matching source files can be copied to the target directory again on the next qs sync or daemon sync pass."
+        long_about = "Include a path again by removing one matching exclude rule. If no existing rule matches, the command succeeds without changing rules. Matching source files can be copied to the target directory again on the next linker sync or daemon sync pass."
     )]
     Include {
         #[arg(help = "Exact rule pattern to include again")]
@@ -266,14 +266,14 @@ fn run() -> Result<()> {
         }
         Command::Remove { name } => {
             let item = ops::remove_item(&name)?;
-            println!("removed from QuickSync: {}", item.name);
+            println!("removed from Linker: {}", item.name);
             println!("source kept: {}", item.local_path);
             println!("target kept: {}", item.cloud_path);
             println!("local metadata deleted");
         }
         Command::Delete { name } => {
             let item = ops::delete_item(&name)?;
-            println!("deleted from QuickSync: {}", item.name);
+            println!("deleted from Linker: {}", item.name);
             println!("source kept: {}", item.local_path);
             println!("target deleted: {}", item.cloud_path);
             println!("local metadata deleted");
@@ -298,33 +298,33 @@ fn yes_no(value: bool) -> &'static str {
     }
 }
 
-fn format_error(error: &QsyncError) -> String {
+fn format_error(error: &LinkerError) -> String {
     match error {
-        QsyncError::ItemExists(name) => format!(
-            "error: item already exists: {name}\nhelp: item names come from source directory names; rename the source directory or run `qs list` to see existing items."
+        LinkerError::ItemExists(name) => format!(
+            "error: item already exists: {name}\nhelp: item names come from source directory names; rename the source directory or run `linker list` to see existing items."
         ),
-        QsyncError::ItemNotFound(name) => format!(
-            "error: item was not found: {name}\nhelp: run `qs list` to see configured items."
+        LinkerError::ItemNotFound(name) => format!(
+            "error: item was not found: {name}\nhelp: run `linker list` to see configured items."
         ),
-        QsyncError::PathMissing(path) => format!(
+        LinkerError::PathMissing(path) => format!(
             "error: path does not exist: {}\nhelp: check the path and try again.",
             path.display()
         ),
-        QsyncError::NotDirectory(path) => format!(
+        LinkerError::NotDirectory(path) => format!(
             "error: path is not a directory: {}.",
             path.display()
         ),
-        QsyncError::NotFile(path) => format!(
+        LinkerError::NotFile(path) => format!(
             "error: path is not a file: {}.",
             path.display()
         ),
-        QsyncError::InvalidName(name) => format!(
-            "error: invalid item name: {name}\nhelp: use a simple file or folder name without path separators; `.quicksync` is reserved."
+        LinkerError::InvalidName(name) => format!(
+            "error: invalid item name: {name}\nhelp: use a simple file or folder name without path separators; `.linker` is reserved."
         ),
-        QsyncError::InvalidRulePattern(message) => format!(
+        LinkerError::InvalidRulePattern(message) => format!(
             "error: invalid rule pattern: {message}\nhelp: pass one non-empty gitignore-style pattern, for example `tmp/` or `*.log`."
         ),
-        QsyncError::InvalidAssociation(message) => format!(
+        LinkerError::InvalidAssociation(message) => format!(
             "error: invalid sync association: {message}\nhelp: choose a target parent outside the source directory."
         ),
         _ => format!("error: {error}"),

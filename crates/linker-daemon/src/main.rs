@@ -6,18 +6,18 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use fs2::FileExt;
+use linker_core::ops;
+use linker_core::paths;
+use linker_core::state::Item;
+use linker_core::Result;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
-use qsync_core::ops;
-use qsync_core::paths;
-use qsync_core::state::Item;
-use qsync_core::Result;
 
 const DEBOUNCE: Duration = Duration::from_secs(2);
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Parser)]
-#[command(name = "qsd")]
-#[command(about = "QuickSync background daemon")]
+#[command(name = "linkerd")]
+#[command(about = "Linker background daemon")]
 struct Args {
     #[arg(long)]
     once: bool,
@@ -25,7 +25,7 @@ struct Args {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("qsd error: {error}");
+        eprintln!("linkerd error: {error}");
         std::process::exit(1);
     }
 }
@@ -106,7 +106,7 @@ impl Daemon {
             self.watch_item_path(watcher, &item.id, Path::new(&item.cloud_path))?;
         }
 
-        eprintln!("qsd watching {} item(s)", self.items.len());
+        eprintln!("linkerd watching {} item(s)", self.items.len());
         Ok(())
     }
 
@@ -179,7 +179,7 @@ impl Daemon {
             Ok(summaries) => {
                 for summary in summaries {
                     eprintln!(
-                        "qsd {reason} synced {}: source->target={}, target->source={}, deleted_source={}, deleted_target={}, unchanged={}",
+                        "linkerd {reason} synced {}: source->target={}, target->source={}, deleted_source={}, deleted_target={}, unchanged={}",
                         summary.item_name,
                         summary.copied_local_to_cloud,
                         summary.copied_cloud_to_local,
@@ -189,7 +189,7 @@ impl Daemon {
                     );
                 }
             }
-            Err(error) => eprintln!("qsd failed to sync {}: {error}", item.name),
+            Err(error) => eprintln!("linkerd failed to sync {}: {error}", item.name),
         }
     }
 }
@@ -201,7 +201,7 @@ struct DaemonLock {
 
 impl DaemonLock {
     fn acquire() -> Result<Self> {
-        let path = paths::app_support_dir()?.join("qsd.lock");
+        let path = paths::app_support_dir()?.join("linkerd.lock");
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }

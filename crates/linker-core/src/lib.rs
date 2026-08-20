@@ -7,4 +7,4 @@ pub mod rules;
 pub mod state;
 pub mod sync;
 
-pub use error::{QsyncError, Result};
+pub use error::{LinkerError, Result};

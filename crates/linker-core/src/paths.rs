@@ -2,14 +2,14 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{QsyncError, Result};
+use crate::{LinkerError, Result};
 
-const APP_SUPPORT_ENV: &str = "QUICKSYNC_APP_SUPPORT_DIR";
+const APP_SUPPORT_ENV: &str = "LINKER_APP_SUPPORT_DIR";
 
 pub fn home_dir() -> Result<PathBuf> {
     env::var_os("HOME")
         .map(PathBuf::from)
-        .ok_or(QsyncError::HomeDirMissing)
+        .ok_or(LinkerError::HomeDirMissing)
 }
 
 pub fn expand_tilde(path: &str) -> Result<PathBuf> {
@@ -28,7 +28,7 @@ pub fn app_support_dir() -> Result<PathBuf> {
     if let Some(path) = env::var_os(APP_SUPPORT_ENV) {
         return Ok(PathBuf::from(path));
     }
-    Ok(home_dir()?.join("Library/Application Support/QuickSync"))
+    Ok(home_dir()?.join("Library/Application Support/Linker"))
 }
 
 pub fn state_db_path() -> Result<PathBuf> {
@@ -60,10 +60,10 @@ pub fn canonical_dir_create(path: &str) -> Result<PathBuf> {
 pub fn canonical_existing_dir(path: &str) -> Result<PathBuf> {
     let path = expand_tilde(path)?;
     if !path.exists() {
-        return Err(QsyncError::PathMissing(path));
+        return Err(LinkerError::PathMissing(path));
     }
     if !path.is_dir() {
-        return Err(QsyncError::NotDirectory(path));
+        return Err(LinkerError::NotDirectory(path));
     }
     Ok(path.canonicalize()?)
 }
@@ -78,19 +78,29 @@ pub fn default_item_name(path: &Path) -> Result<String> {
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .map(ToOwned::to_owned)
-        .ok_or_else(|| QsyncError::InvalidItemName(path.to_path_buf()))
+        .ok_or_else(|| LinkerError::InvalidItemName(path.to_path_buf()))
 }
 
 pub fn validate_item_name(name: &str) -> Result<()> {
     if name.trim().is_empty()
         || name == "."
         || name == ".."
-        || name == ".quicksync"
+        || name == ".linker"
         || name.contains('/')
         || name.contains('\\')
         || name.contains(std::path::MAIN_SEPARATOR)
     {
-        return Err(QsyncError::InvalidName(name.to_string()));
+        return Err(LinkerError::InvalidName(name.to_string()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_item_name;
+
+    #[test]
+    fn reserves_linker_control_directory_name() {
+        assert!(validate_item_name(".linker").is_err());
+    }
 }

@@ -59,7 +59,7 @@ pub fn doctor_report() -> DoctorReport {
         Err(err) => checks.push(error(
             "Application Support",
             err.to_string(),
-            "Check HOME or set QUICKSYNC_APP_SUPPORT_DIR for testing.",
+            "Check HOME or set LINKER_APP_SUPPORT_DIR for testing.",
         )),
     }
 
@@ -68,7 +68,7 @@ pub fn doctor_report() -> DoctorReport {
         Err(err) => checks.push(error(
             "State Database",
             err.to_string(),
-            "Check QuickSync Application Support permissions.",
+            "Check Linker Application Support permissions.",
         )),
     }
 
@@ -97,20 +97,20 @@ pub fn doctor_report() -> DoctorReport {
                     checks.push(error(
                         "Sync Associations",
                         missing.join("; "),
-                        "Run `qs status`, then fix the missing directory or remove the association.",
+                        "Run `linker status`, then fix the missing directory or remove the association.",
                     ));
                 }
             }
             Err(err) => checks.push(error(
                 "Sync Associations",
                 err.to_string(),
-                "Check the QuickSync state database.",
+                "Check the Linker state database.",
             )),
         },
         Err(err) => checks.push(error(
             "Sync Associations",
             err.to_string(),
-            "Check QuickSync Application Support permissions.",
+            "Check Linker Application Support permissions.",
         )),
     }
 
@@ -118,19 +118,19 @@ pub fn doctor_report() -> DoctorReport {
     match (&daemon.binary_path, daemon.installed, daemon.running) {
         (Some(path), true, true) => checks.push(ok(
             "Daemon",
-            format!("qsd appears to be running at {}", path.display()),
+            format!("linkerd appears to be running at {}", path.display()),
         )),
         (Some(path), true, false) => checks.push(warn(
             "Daemon",
             format!(
-                "qsd binary found at {}, but it does not appear to be running",
+                "linkerd binary found at {}, but it does not appear to be running",
                 path.display()
             ),
-            "Run ./scripts/install.sh, or start qsd manually for testing.",
+            "Run ./scripts/install.sh, or start linkerd manually for testing.",
         )),
         _ => checks.push(warn(
             "Daemon",
-            "qsd binary was not found next to qs".to_string(),
+            "linkerd binary was not found next to linker".to_string(),
             "Build the project or run ./scripts/install.sh.",
         )),
     }
@@ -153,12 +153,12 @@ pub fn daemon_health() -> DaemonHealth {
 fn qsd_binary_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    let candidate = dir.join("qsd");
+    let candidate = dir.join("linkerd");
     Some(candidate)
 }
 
 fn is_daemon_lock_held() -> bool {
-    let Ok(path) = paths::app_support_dir().map(|dir| dir.join("qsd.lock")) else {
+    let Ok(path) = paths::app_support_dir().map(|dir| dir.join("linkerd.lock")) else {
         return false;
     };
     if !path.exists() {

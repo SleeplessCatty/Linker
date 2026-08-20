@@ -1,5 +1,5 @@
 [package]
-name = "qsync-core"
+name = "linker-core"
 edition.workspace = true
 license.workspace = true
 version.workspace = true

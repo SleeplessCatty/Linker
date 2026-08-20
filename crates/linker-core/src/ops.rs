@@ -36,7 +36,7 @@ pub fn add_item(options: AddOptions) -> Result<AddOutcome> {
 
     let mut db = StateDb::open(&paths::state_db_path()?)?;
     if db.name_exists(&name)? {
-        return Err(crate::QsyncError::ItemExists(name));
+        return Err(crate::LinkerError::ItemExists(name));
     }
 
     let id = Uuid::new_v4().to_string();
@@ -44,7 +44,7 @@ pub fn add_item(options: AddOptions) -> Result<AddOutcome> {
     validate_association_paths(&local_path, &cloud_path)?;
     if cloud_path.exists() {
         if !cloud_path.is_dir() {
-            return Err(crate::QsyncError::NotDirectory(cloud_path));
+            return Err(crate::LinkerError::NotDirectory(cloud_path));
         }
     }
     let manifest_path = paths::app_manifests_dir()?.join(format!("{name}.json"));
@@ -211,7 +211,7 @@ fn validate_association_paths(source_path: &Path, target_path: &Path) -> Result<
         || source_path.starts_with(&target_compare)
         || target_compare.starts_with(source_path)
     {
-        return Err(crate::QsyncError::InvalidAssociation(
+        return Err(crate::LinkerError::InvalidAssociation(
             "source directory and target directory must be separate; one cannot contain the other"
                 .to_string(),
         ));

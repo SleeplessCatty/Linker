@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::{QsyncError, Result};
+use crate::{LinkerError, Result};
 
 #[derive(Debug, Clone)]
 pub struct Rule {
@@ -39,7 +39,7 @@ fn push_unique_rule(rules: &mut Vec<Rule>, pattern: String) {
 pub fn normalize_rule_pattern(pattern: &str) -> Result<String> {
     let pattern = pattern.trim();
     if pattern.is_empty() {
-        return Err(QsyncError::InvalidRulePattern(
+        return Err(LinkerError::InvalidRulePattern(
             "pattern must not be empty".to_string(),
         ));
     }

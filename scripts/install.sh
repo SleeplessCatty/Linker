@@ -112,6 +112,14 @@ if ! launchctl kickstart -k "gui/${USER_UID}/${PLIST_LABEL}"; then
   legacy_cleanup_error "could not start LaunchAgent ${PLIST_LABEL}; legacy state was preserved"
   exit 1
 fi
+if ! wait_for_linker_daemon \
+  "${USER_UID}" \
+  "${PLIST_LABEL}" \
+  "${BIN_DIR}/linker" \
+  "${APP_SUPPORT_DIR}"; then
+  stop_launchagent "${USER_UID}" "${PLIST_LABEL}" "${PLIST_PATH}" || true
+  exit 1
+fi
 
 remove_legacy_artifacts "${USER_HOME}" "${LINK_DIR}" "${USER_UID}"
 

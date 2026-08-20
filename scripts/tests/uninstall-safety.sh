@@ -19,6 +19,7 @@ TEST_PROJECT="${TEST_ROOT}/project"
 TEST_HOME="${TEST_ROOT}/home"
 LINK_DIR="${TEST_ROOT}/command-links"
 FAKE_BIN="${TEST_ROOT}/fake-bin"
+NO_LAUNCHCTL_BIN="${TEST_ROOT}/no-launchctl-bin"
 APP_SUPPORT_DIR="${TEST_HOME}/Library/Application Support/Linker"
 BIN_DIR="${APP_SUPPORT_DIR}/bin"
 PLIST_PATH="${TEST_HOME}/Library/LaunchAgents/com.linker.linkerd.plist"
@@ -29,7 +30,8 @@ mkdir -p \
   "${BIN_DIR}" \
   "$(dirname "${PLIST_PATH}")" \
   "${LINK_DIR}" \
-  "${FAKE_BIN}"
+  "${FAKE_BIN}" \
+  "${NO_LAUNCHCTL_BIN}"
 cp "${ROOT_DIR}/scripts/uninstall.sh" "${TEST_PROJECT}/scripts/uninstall.sh"
 cp "${ROOT_DIR}/scripts/lib/cleanup-legacy.sh" \
   "${TEST_PROJECT}/scripts/lib/cleanup-legacy.sh"
@@ -68,6 +70,25 @@ set -e
 
 [[ "${uninstall_status}" != "0" ]] \
   || fail "uninstall ignored a running daemon that could not be stopped"
+assert_exists "${BIN_DIR}/linker"
+assert_exists "${BIN_DIR}/linkerd"
+assert_exists "${PLIST_PATH}"
+assert_exists "${LINK_DIR}/linker"
+assert_exists "${LINK_DIR}/linkerd"
+
+for utility in basename dirname id readlink; do
+  ln -s "/usr/bin/${utility}" "${NO_LAUNCHCTL_BIN}/${utility}"
+done
+
+set +e
+HOME="${TEST_HOME}" PATH="${NO_LAUNCHCTL_BIN}" \
+/bin/bash "${TEST_PROJECT}/scripts/uninstall.sh" --link-dir "${LINK_DIR}" \
+  >> "${UNINSTALL_LOG}" 2>&1
+missing_launchctl_status=$?
+set -e
+
+[[ "${missing_launchctl_status}" != "0" ]] \
+  || fail "uninstall continued when launchctl was unavailable"
 assert_exists "${BIN_DIR}/linker"
 assert_exists "${BIN_DIR}/linkerd"
 assert_exists "${PLIST_PATH}"

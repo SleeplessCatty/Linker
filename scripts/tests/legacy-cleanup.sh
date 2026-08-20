@@ -18,24 +18,27 @@ assert_missing() {
 }
 
 TEST_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
-trap 'rm -rf "${TEST_ROOT}"' EXIT
+trap 'chmod -R u+w "${TEST_ROOT}" 2>/dev/null || true; rm -rf "${TEST_ROOT}"' EXIT
 TEST_UID="$(id -u)"
 
 TEST_HOME="${TEST_ROOT}/home"
 LINK_DIR="${TEST_ROOT}/links"
 LEGACY_ROOT="${TEST_HOME}/Library/Application Support/QuickSync"
 LEGACY_BIN="${LEGACY_ROOT}/bin"
-LEGACY_PLIST="${TEST_HOME}/Library/LaunchAgents/com.quicksync.qsd.plist"
+LEGACY_QSD_PLIST="${TEST_HOME}/Library/LaunchAgents/com.quicksync.qsd.plist"
+LEGACY_QSYNCD_PLIST="${TEST_HOME}/Library/LaunchAgents/com.quicksync.qsyncd.plist"
 SOURCE_SENTINEL="${TEST_ROOT}/source/project/file.txt"
 TARGET_SENTINEL="${TEST_ROOT}/target/project/file.txt"
 EXTERNAL_BIN="${TEST_ROOT}/external/qsd"
 
-mkdir -p "${LEGACY_BIN}" "$(dirname "${LEGACY_PLIST}")" "${LINK_DIR}"
+mkdir -p "${LEGACY_BIN}" "$(dirname "${LEGACY_QSD_PLIST}")" "${LINK_DIR}"
 mkdir -p "${LEGACY_ROOT}/logs" "${LEGACY_ROOT}/manifests" \
   "${LEGACY_ROOT}/rules" "${LEGACY_ROOT}/tmp"
 mkdir -p "$(dirname "${SOURCE_SENTINEL}")" "$(dirname "${TARGET_SENTINEL}")"
 mkdir -p "$(dirname "${EXTERNAL_BIN}")"
-touch "${LEGACY_BIN}/qs" "${LEGACY_BIN}/qsd" "${LEGACY_PLIST}"
+touch "${LEGACY_BIN}/qs" "${LEGACY_BIN}/qsd" \
+  "${LEGACY_BIN}/qsync" "${LEGACY_BIN}/qsyncd"
+touch "${LEGACY_QSD_PLIST}" "${LEGACY_QSYNCD_PLIST}"
 touch "${LEGACY_ROOT}/logs/qsd.out.log" "${LEGACY_ROOT}/logs/qsd.err.log"
 touch "${LEGACY_ROOT}/logs/qsyncd.out.log" "${LEGACY_ROOT}/logs/qsyncd.err.log"
 touch "${LEGACY_ROOT}/manifests/demo.json" "${LEGACY_ROOT}/rules/demo.ignore"
@@ -50,15 +53,23 @@ INSERT INTO items VALUES ('$(dirname "${SOURCE_SENTINEL}")', '$(dirname "${TARGE
 SQL
 ln -s "${LEGACY_BIN}/qs" "${LINK_DIR}/qs"
 ln -s "${EXTERNAL_BIN}" "${LINK_DIR}/qsd"
+ln -s "${LEGACY_BIN}/qsync" "${LINK_DIR}/qsync"
+ln -s "${LEGACY_BIN}/qsyncd" "${LINK_DIR}/qsyncd"
 
 LINKER_TEST_LAUNCHCTL_LOG="${TEST_ROOT}/launchctl.log"
-LINKER_TEST_SERVICE_LOADED=1
+LINKER_TEST_QSD_LOADED=1
+LINKER_TEST_QSYNCD_LOADED=1
 LINKER_TEST_BOOTOUT_FAIL=0
 launchctl() {
   printf '%s\n' "$*" >> "${LINKER_TEST_LAUNCHCTL_LOG}"
   case "$1" in
     print)
-      if [[ "${LINKER_TEST_SERVICE_LOADED}" == "1" ]]; then
+      if [[ "$2" == *"com.quicksync.qsyncd" ]] \
+        && [[ "${LINKER_TEST_QSYNCD_LOADED}" == "1" ]]; then
+        return 0
+      fi
+      if [[ "$2" == *"com.quicksync.qsd" ]] \
+        && [[ "${LINKER_TEST_QSD_LOADED}" == "1" ]]; then
         return 0
       fi
       echo "Bad request. Could not find service" >&2
@@ -68,13 +79,32 @@ launchctl() {
       if [[ "${LINKER_TEST_BOOTOUT_FAIL}" == "1" ]]; then
         return 5
       fi
-      LINKER_TEST_SERVICE_LOADED=0
+      if [[ "$2" == *"com.quicksync.qsyncd" ]]; then
+        LINKER_TEST_QSYNCD_LOADED=0
+      elif [[ "$2" == *"com.quicksync.qsd" ]]; then
+        LINKER_TEST_QSD_LOADED=0
+      fi
       ;;
   esac
 }
 
 validate_cleanup_inputs "${TEST_HOME}" "${LINK_DIR}" "${TEST_UID}"
 validate_cleanup_inputs "${TEST_HOME}/" "${LINK_DIR}/" "${TEST_UID}"
+
+PRIVILEGED_ROOT="${TEST_ROOT}/privileged-root"
+PRIVILEGED_LINK_DIR="${PRIVILEGED_ROOT}/local/bin"
+mkdir -p "${PRIVILEGED_LINK_DIR}"
+chmod 0555 "${PRIVILEGED_ROOT}" "${PRIVILEGED_ROOT}/local" \
+  "${PRIVILEGED_LINK_DIR}"
+validate_privileged_directory_chain \
+  "${PRIVILEGED_ROOT}" "${PRIVILEGED_LINK_DIR}" "${TEST_UID}"
+chmod 0577 "${PRIVILEGED_ROOT}/local"
+if validate_privileged_directory_chain \
+  "${PRIVILEGED_ROOT}" "${PRIVILEGED_LINK_DIR}" "${TEST_UID}" \
+  2>> "${TEST_ROOT}/privileged-error.log"; then
+  fail "a group/other-writable privileged ancestor was accepted"
+fi
+chmod 0555 "${PRIVILEGED_ROOT}/local"
 
 if link_points_into_dir "${LINK_DIR}/qsd" ""; then
   fail "empty managed root must not match an arbitrary command link"
@@ -130,12 +160,17 @@ fi
 cleanup_legacy_install "${TEST_HOME}" "${LINK_DIR}" "${TEST_UID}"
 
 assert_missing "${LEGACY_ROOT}"
-assert_missing "${LEGACY_PLIST}"
+assert_missing "${LEGACY_QSD_PLIST}"
+assert_missing "${LEGACY_QSYNCD_PLIST}"
 assert_missing "${LINK_DIR}/qs"
 assert_exists "${LINK_DIR}/qsd"
+assert_missing "${LINK_DIR}/qsync"
+assert_missing "${LINK_DIR}/qsyncd"
 assert_exists "${SOURCE_SENTINEL}"
 assert_exists "${TARGET_SENTINEL}"
 grep -F "bootout gui/${TEST_UID}/com.quicksync.qsd" "${LINKER_TEST_LAUNCHCTL_LOG}" >/dev/null
+grep -F "bootout gui/${TEST_UID}/com.quicksync.qsyncd" \
+  "${LINKER_TEST_LAUNCHCTL_LOG}" >/dev/null
 
 LINK_ERROR_LOG="${TEST_ROOT}/link-error.log"
 if ensure_link_available \
@@ -152,7 +187,8 @@ mkdir -p "${LEGACY_BIN}"
 touch "${LEGACY_BIN}/qsd"
 ln -s "${LEGACY_BIN}/qsd" "${LINK_DIR}/qsd"
 : > "${LINKER_TEST_LAUNCHCTL_LOG}"
-LINKER_TEST_SERVICE_LOADED=1
+LINKER_TEST_QSD_LOADED=1
+LINKER_TEST_QSYNCD_LOADED=0
 
 cleanup_legacy_install "${TEST_HOME}" "${LINK_DIR}" "${TEST_UID}"
 
@@ -193,6 +229,18 @@ if cleanup_legacy_install \
 fi
 assert_exists "${DB_ROOT}/state.sqlite"
 
+CORRUPT_HOME="${TEST_ROOT}/corrupt-home"
+CORRUPT_LINK_DIR="${TEST_ROOT}/corrupt-links"
+CORRUPT_ROOT="${CORRUPT_HOME}/Library/Application Support/QuickSync"
+mkdir -p "${CORRUPT_ROOT}" "${CORRUPT_LINK_DIR}"
+printf 'not a sqlite database\n' > "${CORRUPT_ROOT}/state.sqlite"
+if cleanup_legacy_install \
+  "${CORRUPT_HOME}" "${CORRUPT_LINK_DIR}" "${TEST_UID}" \
+  2>> "${INVALID_INPUT_LOG}"; then
+  fail "cleanup accepted a corrupt legacy database"
+fi
+assert_exists "${CORRUPT_ROOT}/state.sqlite"
+
 SYMLINK_HOME="${TEST_ROOT}/symlink-home"
 SYMLINK_LINK_DIR="${TEST_ROOT}/symlink-links"
 EXTERNAL_SUPPORT="${TEST_ROOT}/external-support"
@@ -214,7 +262,8 @@ STOP_ROOT="${STOP_HOME}/Library/Application Support/QuickSync"
 STOP_PLIST="${STOP_HOME}/Library/LaunchAgents/com.quicksync.qsd.plist"
 mkdir -p "${STOP_ROOT}/bin" "${STOP_LINK_DIR}" "$(dirname "${STOP_PLIST}")"
 touch "${STOP_ROOT}/bin/qs" "${STOP_PLIST}"
-LINKER_TEST_SERVICE_LOADED=1
+LINKER_TEST_QSD_LOADED=1
+LINKER_TEST_QSYNCD_LOADED=0
 LINKER_TEST_BOOTOUT_FAIL=1
 if cleanup_legacy_install \
   "${STOP_HOME}" "${STOP_LINK_DIR}" "${TEST_UID}" \
@@ -227,6 +276,61 @@ LINKER_TEST_BOOTOUT_FAIL=0
 cleanup_legacy_install "${STOP_HOME}" "${STOP_LINK_DIR}" "${TEST_UID}"
 assert_missing "${STOP_ROOT}"
 assert_missing "${STOP_PLIST}"
+
+SWAP_ROOT="${TEST_ROOT}/swap-root"
+SWAP_OUTSIDE="${TEST_ROOT}/swap-outside"
+mkdir -p "${SWAP_OUTSIDE}"
+touch "${SWAP_OUTSIDE}/qs"
+ln -s "${SWAP_OUTSIDE}" "${SWAP_ROOT}"
+if remove_legacy_directory_files "${SWAP_ROOT}" bin 2>> "${INVALID_INPUT_LOG}"; then
+  fail "cleanup accepted a managed directory replaced by a symlink"
+fi
+assert_exists "${SWAP_OUTSIDE}/qs"
+
+RACE_HOME="${TEST_ROOT}/race-home"
+RACE_LINK_DIR="${TEST_ROOT}/race-links"
+RACE_ROOT="${RACE_HOME}/Library/Application Support/QuickSync"
+RACE_ORIGINAL_BIN="${TEST_ROOT}/race-original-bin"
+RACE_OUTSIDE="${TEST_ROOT}/race-source-target"
+mkdir -p "${RACE_ROOT}/bin" "${RACE_LINK_DIR}" "${RACE_OUTSIDE}"
+touch "${RACE_ROOT}/bin/qs" "${RACE_OUTSIDE}/qs"
+if (
+  eval "$(
+    declare -f remove_link_if_points_into \
+      | sed '1s/remove_link_if_points_into/original_remove_link_if_points_into/'
+  )"
+  remove_link_if_points_into() {
+    original_remove_link_if_points_into "$@" || return 1
+    if [[ "$(basename "$1")" == "qsyncd" ]]; then
+      mv "${RACE_ROOT}/bin" "${RACE_ORIGINAL_BIN}"
+      ln -s "${RACE_OUTSIDE}" "${RACE_ROOT}/bin"
+    fi
+  }
+
+  set +e
+  remove_legacy_artifacts "${RACE_HOME}" "${RACE_LINK_DIR}" "${TEST_UID}" \
+    2>> "${INVALID_INPUT_LOG}"
+  race_status=$?
+  set -e
+  [[ "${race_status}" != "0" ]]
+); then
+  :
+else
+  fail "cleanup ignored a legacy-directory symlink swap"
+fi
+assert_exists "${RACE_OUTSIDE}/qs"
+assert_exists "${RACE_ORIGINAL_BIN}/qs"
+
+NO_LAUNCHCTL_PATH="${TEST_ROOT}/no-launchctl"
+mkdir -p "${NO_LAUNCHCTL_PATH}"
+if (
+  unset -f launchctl
+  PATH="${NO_LAUNCHCTL_PATH}" \
+    stop_launchagent "${TEST_UID}" "com.linker.linkerd" \
+      "${TEST_HOME}/Library/LaunchAgents/com.linker.linkerd.plist"
+) 2>> "${INVALID_INPUT_LOG}"; then
+  fail "daemon shutdown was treated as successful without launchctl"
+fi
 
 MANAGED_ROOT="${TEST_ROOT}/managed/bin"
 mkdir -p "${MANAGED_ROOT}"
@@ -263,9 +367,9 @@ ln -s "${PLIST_VICTIM}" "${PLIST_DEST}"
 write_launchagent_plist \
   "${ROOT_DIR}/packaging/launchagent/com.linker.linkerd.plist.in" \
   "${PLIST_DEST}" \
-  "${PLIST_TEST_ROOT}/bin/linkerd & <daemon>" \
-  "${PLIST_TEST_ROOT}/logs & <logs>" \
-  "${PLIST_TEST_ROOT}/Application Support/Linker & <state>"
+  "${PLIST_TEST_ROOT}/bin/linkerd & <daemon> #1" \
+  "${PLIST_TEST_ROOT}/logs & <logs> #1" \
+  "${PLIST_TEST_ROOT}/Application Support/Linker & <state> #1"
 
 [[ ! -L "${PLIST_DEST}" ]] || fail "plist destination remained a symlink"
 [[ "$(cat "${PLIST_VICTIM}")" == "source sentinel" ]] \
@@ -275,5 +379,31 @@ grep -F '&amp;' "${PLIST_DEST}" >/dev/null \
 grep -F '&lt;' "${PLIST_DEST}" >/dev/null \
   || fail "plist path values were not XML escaped"
 plutil -lint "${PLIST_DEST}" >/dev/null
+
+PLIST_DIRECTORY_TARGET="${PLIST_TEST_ROOT}/directory-target"
+PLIST_DIRECTORY_LINK="${PLIST_DEST_DIR}/directory-link.plist"
+mkdir -p "${PLIST_DIRECTORY_TARGET}"
+ln -s "${PLIST_DIRECTORY_TARGET}" "${PLIST_DIRECTORY_LINK}"
+write_launchagent_plist \
+  "${ROOT_DIR}/packaging/launchagent/com.linker.linkerd.plist.in" \
+  "${PLIST_DIRECTORY_LINK}" \
+  "${PLIST_TEST_ROOT}/bin/linkerd" \
+  "${PLIST_TEST_ROOT}/logs" \
+  "${PLIST_TEST_ROOT}/Application Support/Linker"
+[[ ! -L "${PLIST_DIRECTORY_LINK}" && -f "${PLIST_DIRECTORY_LINK}" ]] \
+  || fail "a plist symlink to a directory was not replaced safely"
+[[ -z "$(find "${PLIST_DIRECTORY_TARGET}" -mindepth 1 -maxdepth 1 -print)" ]] \
+  || fail "plist rendering wrote through a directory symlink"
+
+PLIST_DANGLING_LINK="${PLIST_DEST_DIR}/dangling-link.plist"
+ln -s "${PLIST_TEST_ROOT}/missing-target.plist" "${PLIST_DANGLING_LINK}"
+write_launchagent_plist \
+  "${ROOT_DIR}/packaging/launchagent/com.linker.linkerd.plist.in" \
+  "${PLIST_DANGLING_LINK}" \
+  "${PLIST_TEST_ROOT}/bin/linkerd" \
+  "${PLIST_TEST_ROOT}/logs" \
+  "${PLIST_TEST_ROOT}/Application Support/Linker"
+[[ ! -L "${PLIST_DANGLING_LINK}" && -f "${PLIST_DANGLING_LINK}" ]] \
+  || fail "a dangling plist symlink was not replaced safely"
 
 echo "legacy cleanup tests passed"

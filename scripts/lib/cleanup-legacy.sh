@@ -93,8 +93,6 @@ ensure_safe_directory() {
 validate_link_directory() {
   local link_dir="$1"
   local canonical
-  local existing_parent
-  local owner_uid
 
   if path_has_unsafe_alias "${link_dir}" || path_has_symlink_ancestor "${link_dir}"; then
     legacy_cleanup_error "refusing unsafe command-link directory: ${link_dir}"
@@ -125,24 +123,98 @@ validate_link_directory() {
     fi
     return 0
   fi
+}
 
-  existing_parent="${link_dir}"
-  while [[ ! -e "${existing_parent}" ]]; do
-    existing_parent="$(dirname "${existing_parent}")"
+validate_privileged_directory_chain() {
+  local trusted_root="$1"
+  local target_dir="$2"
+  local required_owner_uid="$3"
+  local relative
+  local current
+  local component
+  local owner_uid
+  local mode
+  local permission_bits
+  local group_bit
+  local other_bit
+  local acl_output
+  local -a components
+
+  if path_has_unsafe_alias "${trusted_root}" \
+    || path_has_unsafe_alias "${target_dir}" \
+    || path_has_symlink_ancestor "${trusted_root}"; then
+    legacy_cleanup_error "refusing unsafe privileged directory chain"
+    return 1
+  fi
+  trusted_root="$(trim_trailing_slash "${trusted_root}")"
+  target_dir="$(trim_trailing_slash "${target_dir}")"
+  case "${target_dir}" in
+    "${trusted_root}"|"${trusted_root}"/*) ;;
+    *)
+      legacy_cleanup_error \
+        "privileged directory is outside its trusted root: ${target_dir}"
+      return 1
+      ;;
+  esac
+
+  relative="${target_dir#"${trusted_root}"}"
+  relative="${relative#/}"
+  current="${trusted_root}"
+  components=()
+  [[ -z "${relative}" ]] || IFS='/' read -r -a components <<< "${relative}"
+
+  while true; do
+    if [[ -L "${current}" ]] \
+      || [[ -e "${current}" && ! -d "${current}" ]]; then
+      legacy_cleanup_error "refusing unsafe privileged directory: ${current}"
+      return 1
+    fi
+    if [[ ! -e "${current}" ]]; then
+      return 0
+    fi
+
+    owner_uid="$(stat -f '%u' "${current}" 2>/dev/null)" || {
+      legacy_cleanup_error "cannot verify ownership of ${current}"
+      return 1
+    }
+    mode="$(stat -f '%Lp' "${current}" 2>/dev/null)" || {
+      legacy_cleanup_error "cannot verify permissions of ${current}"
+      return 1
+    }
+    if [[ "${owner_uid}" != "${required_owner_uid}" ]] \
+      || [[ ! "${mode}" =~ ^[0-7]{3,6}$ ]]; then
+      legacy_cleanup_error "refusing untrusted privileged directory: ${current}"
+      return 1
+    fi
+    permission_bits="${mode: -3}"
+    group_bit="${permission_bits:1:1}"
+    other_bit="${permission_bits:2:1}"
+    case "${group_bit}${other_bit}" in
+      *[2367]*)
+        legacy_cleanup_error \
+          "refusing group/other-writable privileged directory: ${current}"
+        return 1
+        ;;
+    esac
+    if [[ -w "${current}" ]]; then
+      legacy_cleanup_error \
+        "refusing privileged directory writable by the current user: ${current}"
+      return 1
+    fi
+    acl_output="$(LC_ALL=C ls -lde "${current}" 2>/dev/null)" || {
+      legacy_cleanup_error "cannot verify ACLs for ${current}"
+      return 1
+    }
+    if [[ "${acl_output}" =~ $'\n'[[:space:]]*[0-9]+: ]]; then
+      legacy_cleanup_error "refusing privileged directory with an ACL: ${current}"
+      return 1
+    fi
+
+    [[ "${current}" != "${target_dir}" ]] || break
+    component="${components[0]}"
+    components=("${components[@]:1}")
+    current="${current}/${component}"
   done
-  if [[ -w "${existing_parent}" ]]; then
-    return 0
-  fi
-
-  owner_uid="$(stat -f '%u' "${existing_parent}" 2>/dev/null)" || {
-    legacy_cleanup_error "cannot verify ownership of ${existing_parent}"
-    return 1
-  }
-  if [[ "${owner_uid}" != "0" ]]; then
-    legacy_cleanup_error \
-      "refusing sudo for a command-link directory not rooted in a root-owned path: ${link_dir}"
-    return 1
-  fi
 }
 
 authorize_link_directory() {
@@ -152,6 +224,7 @@ authorize_link_directory() {
   link_dir="$(trim_trailing_slash "${link_dir}")"
   if [[ ! -w "${link_dir}" ]]; then
     [[ "${link_dir}" == "/usr/local/bin" ]] || return 1
+    validate_privileged_directory_chain "/usr" "${link_dir}" "0" || return 1
     echo "Administrator permission is required for command links in ${link_dir}."
     sudo -v
   fi
@@ -185,6 +258,7 @@ remove_link_if_points_into() {
     rm -f "${link_path}"
   else
     [[ "${link_dir}" == "/usr/local/bin" ]] || return 1
+    validate_privileged_directory_chain "/usr" "${link_dir}" "0" || return 1
     sudo rm -f "${link_path}"
   fi
 }
@@ -223,8 +297,10 @@ install_managed_link() {
     ln -s "${managed_target}" "${link_path}"
   else
     [[ "${link_dir}" == "/usr/local/bin" ]] || return 1
+    validate_privileged_directory_chain "/usr" "${link_dir}" "0" || return 1
     sudo mkdir -p "${link_dir}"
     validate_link_directory "${link_dir}" || return 1
+    validate_privileged_directory_chain "/usr" "${link_dir}" "0" || return 1
     sudo ln -s "${managed_target}" "${link_path}"
   fi
 }
@@ -360,7 +436,7 @@ validate_legacy_directory_entries() {
     name="$(basename "${entry}")"
     allowed=0
     case "${kind}:${name}" in
-      bin:qs|bin:qsd|logs:qsd.out.log|logs:qsd.err.log|logs:qsyncd.out.log|logs:qsyncd.err.log)
+      bin:qs|bin:qsd|bin:qsync|bin:qsyncd|logs:qsd.out.log|logs:qsd.err.log|logs:qsyncd.out.log|logs:qsyncd.err.log)
         allowed=1
         ;;
       manifests:*.json|rules:*.ignore) allowed=1 ;;
@@ -375,6 +451,7 @@ validate_legacy_directory_entries() {
 
 legacy_database_allows_cleanup() {
   local legacy_root="$1"
+  local protected_root="${2:-${legacy_root}}"
   local state_db="${legacy_root}/state.sqlite"
   local escaped_root
   local protected_count
@@ -387,7 +464,7 @@ legacy_database_allows_cleanup() {
     return 1
   fi
 
-  escaped_root="$(printf '%s' "${legacy_root}" | sed "s/'/''/g")"
+  escaped_root="$(printf '%s' "${protected_root}" | sed "s/'/''/g")"
   query="SELECT COUNT(*) FROM items WHERE local_path = '${escaped_root}' OR cloud_path = '${escaped_root}' OR substr(local_path, 1, length('${escaped_root}') + 1) = '${escaped_root}/' OR substr(cloud_path, 1, length('${escaped_root}') + 1) = '${escaped_root}/';"
   protected_count="$(sqlite3 -noheader "${state_db}" "${query}" 2>/dev/null)" || {
     legacy_cleanup_error "cannot verify legacy associations in ${state_db}"
@@ -399,18 +476,19 @@ legacy_database_allows_cleanup() {
   fi
   if [[ "${protected_count}" != "0" ]]; then
     legacy_cleanup_error \
-      "legacy state contains a source or target inside ${legacy_root}; move it out before retrying"
+      "legacy state contains a source or target inside ${protected_root}; move it out before retrying"
     return 1
   fi
 }
 
 validate_legacy_layout() {
   local legacy_root="$1"
+  local protected_root="${2:-${legacy_root}}"
   local entry
   local name
 
   [[ -d "${legacy_root}" ]] || return 0
-  legacy_database_allows_cleanup "${legacy_root}" || return 1
+  legacy_database_allows_cleanup "${legacy_root}" "${protected_root}" || return 1
 
   for entry in "${legacy_root}"/* "${legacy_root}"/.[!.]* "${legacy_root}"/..?*; do
     [[ -e "${entry}" || -L "${entry}" ]] || continue
@@ -461,7 +539,9 @@ legacy_managed_links_present() {
   link_dir="$(trim_trailing_slash "${link_dir}")"
   legacy_bin="${user_home}/Library/Application Support/QuickSync/bin"
   link_points_into_dir "${link_dir}/qs" "${legacy_bin}" \
-    || link_points_into_dir "${link_dir}/qsd" "${legacy_bin}"
+    || link_points_into_dir "${link_dir}/qsd" "${legacy_bin}" \
+    || link_points_into_dir "${link_dir}/qsync" "${legacy_bin}" \
+    || link_points_into_dir "${link_dir}/qsyncd" "${legacy_bin}"
 }
 
 launchctl_reports_missing_service() {
@@ -482,7 +562,10 @@ stop_launchagent() {
   local service_target="gui/${user_uid}/${label}"
   local output
 
-  command -v launchctl >/dev/null 2>&1 || return 0
+  if ! command -v launchctl >/dev/null 2>&1; then
+    legacy_cleanup_error "launchctl is required to verify LaunchAgent state"
+    return 1
+  fi
 
   if output="$(launchctl print "${service_target}" 2>&1)"; then
     if ! launchctl bootout "${service_target}" >/dev/null 2>&1; then
@@ -509,12 +592,65 @@ stop_launchagent() {
   fi
 }
 
+wait_for_linker_daemon() {
+  local user_uid="$1"
+  local label="$2"
+  local linker_binary="$3"
+  local app_support_dir="$4"
+  local service_target="gui/${user_uid}/${label}"
+  local status_output
+  local attempt
+  local healthy
+  local consecutive_healthy=0
+
+  if ! command -v launchctl >/dev/null 2>&1; then
+    legacy_cleanup_error "launchctl is required to verify LaunchAgent health"
+    return 1
+  fi
+  if [[ -L "${linker_binary}" || ! -x "${linker_binary}" ]]; then
+    legacy_cleanup_error "cannot run Linker health check: ${linker_binary}"
+    return 1
+  fi
+
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    status_output=""
+    healthy=0
+    if launchctl print "${service_target}" >/dev/null 2>&1 \
+      && status_output="$(
+        LINKER_APP_SUPPORT_DIR="${app_support_dir}" \
+          "${linker_binary}" status 2>/dev/null
+      )"; then
+      case $'\n'"${status_output}"$'\n' in
+        *$'\ndaemon running: yes\n'*) healthy=1 ;;
+      esac
+    fi
+    if [[ "${healthy}" == "1" ]]; then
+      consecutive_healthy=$((consecutive_healthy + 1))
+      [[ "${consecutive_healthy}" != "3" ]] || return 0
+    else
+      consecutive_healthy=0
+    fi
+    [[ "${attempt}" == "10" ]] || sleep 0.5
+  done
+
+  legacy_cleanup_error \
+    "LaunchAgent ${label} did not become healthy; legacy state was preserved"
+  return 1
+}
+
 stop_legacy_daemon() {
   local user_home="$1"
   local user_uid="$2"
-  local legacy_plist="${user_home}/Library/LaunchAgents/com.quicksync.qsd.plist"
+  local launch_agents_dir="${user_home}/Library/LaunchAgents"
 
-  stop_launchagent "${user_uid}" "com.quicksync.qsd" "${legacy_plist}"
+  stop_launchagent \
+    "${user_uid}" \
+    "com.quicksync.qsd" \
+    "${launch_agents_dir}/com.quicksync.qsd.plist" || return 1
+  stop_launchagent \
+    "${user_uid}" \
+    "com.quicksync.qsyncd" \
+    "${launch_agents_dir}/com.quicksync.qsyncd.plist"
 }
 
 remove_managed_file() {
@@ -528,15 +664,73 @@ remove_managed_file() {
 remove_legacy_directory_files() {
   local directory="$1"
   local kind="$2"
+  local expected_identity
+  local actual_identity
   local entry
 
-  [[ -d "${directory}" ]] || return 0
-  validate_legacy_directory_entries "${directory}" "${kind}" || return 1
-  for entry in "${directory}"/* "${directory}"/.[!.]* "${directory}"/..?*; do
-    [[ -e "${entry}" || -L "${entry}" ]] || continue
-    remove_managed_file "${entry}" || return 1
-  done
+  [[ -e "${directory}" || -L "${directory}" ]] || return 0
+  if [[ -L "${directory}" || ! -d "${directory}" ]]; then
+    legacy_cleanup_error "refusing unsafe legacy directory: ${directory}"
+    return 1
+  fi
+  expected_identity="$(stat -f '%d:%i' "${directory}" 2>/dev/null)" || {
+    legacy_cleanup_error "cannot identify legacy directory: ${directory}"
+    return 1
+  }
+
+  (
+    cd -P -- "${directory}" || exit 1
+    actual_identity="$(stat -f '%d:%i' . 2>/dev/null)" || exit 1
+    if [[ "${actual_identity}" != "${expected_identity}" ]]; then
+      legacy_cleanup_error "legacy directory changed during cleanup: ${directory}"
+      exit 1
+    fi
+
+    validate_legacy_directory_entries . "${kind}" || exit 1
+    for entry in ./* ./.[!.]* ./..?*; do
+      [[ -e "${entry}" || -L "${entry}" ]] || continue
+      remove_managed_file "${entry}" || exit 1
+    done
+  ) || return 1
+
   rmdir "${directory}"
+}
+
+remove_legacy_tree_contents() {
+  local legacy_root="$1"
+  local expected_identity
+  local actual_identity
+  local name
+
+  [[ -e "${legacy_root}" || -L "${legacy_root}" ]] || return 0
+  if [[ -L "${legacy_root}" || ! -d "${legacy_root}" ]]; then
+    legacy_cleanup_error "refusing unsafe legacy directory: ${legacy_root}"
+    return 1
+  fi
+  expected_identity="$(stat -f '%d:%i' "${legacy_root}" 2>/dev/null)" || {
+    legacy_cleanup_error "cannot identify legacy directory: ${legacy_root}"
+    return 1
+  }
+
+  (
+    cd -P -- "${legacy_root}" || exit 1
+    actual_identity="$(stat -f '%d:%i' . 2>/dev/null)" || exit 1
+    if [[ "${actual_identity}" != "${expected_identity}" ]]; then
+      legacy_cleanup_error "legacy directory changed during cleanup: ${legacy_root}"
+      exit 1
+    fi
+
+    validate_legacy_layout . "${legacy_root}" || exit 1
+    for name in \
+      state.sqlite state.sqlite-shm state.sqlite-wal config.json qsd.lock qsyncd.lock .DS_Store; do
+      remove_managed_file "./${name}" || exit 1
+    done
+    remove_legacy_directory_files ./bin bin || exit 1
+    remove_legacy_directory_files ./logs logs || exit 1
+    remove_legacy_directory_files ./manifests manifests || exit 1
+    remove_legacy_directory_files ./rules rules || exit 1
+    remove_legacy_directory_files ./tmp tmp || exit 1
+  )
 }
 
 remove_legacy_artifacts() {
@@ -544,35 +738,32 @@ remove_legacy_artifacts() {
   local link_dir="$2"
   local user_uid="$3"
   local legacy_root
-  local legacy_plist
+  local launch_agents_dir
   local name
 
   validate_legacy_cleanup "${user_home}" "${link_dir}" "${user_uid}" || return 1
   user_home="$(trim_trailing_slash "${user_home}")"
   link_dir="$(trim_trailing_slash "${link_dir}")"
   legacy_root="${user_home}/Library/Application Support/QuickSync"
-  legacy_plist="${user_home}/Library/LaunchAgents/com.quicksync.qsd.plist"
+  launch_agents_dir="${user_home}/Library/LaunchAgents"
 
-  if [[ -L "${legacy_plist}" || -f "${legacy_plist}" ]]; then
-    rm -f "${legacy_plist}"
-  elif [[ -e "${legacy_plist}" ]]; then
-    legacy_cleanup_error "refusing to remove non-file legacy plist: ${legacy_plist}"
-    return 1
-  fi
+  for name in com.quicksync.qsd.plist com.quicksync.qsyncd.plist; do
+    if [[ -L "${launch_agents_dir}/${name}" || -f "${launch_agents_dir}/${name}" ]]; then
+      rm -f "${launch_agents_dir}/${name}"
+    elif [[ -e "${launch_agents_dir}/${name}" ]]; then
+      legacy_cleanup_error \
+        "refusing to remove non-file legacy plist: ${launch_agents_dir}/${name}"
+      return 1
+    fi
+  done
 
   remove_link_if_points_into "${link_dir}/qs" "${legacy_root}/bin" || return 1
   remove_link_if_points_into "${link_dir}/qsd" "${legacy_root}/bin" || return 1
+  remove_link_if_points_into "${link_dir}/qsync" "${legacy_root}/bin" || return 1
+  remove_link_if_points_into "${link_dir}/qsyncd" "${legacy_root}/bin" || return 1
 
-  [[ -d "${legacy_root}" ]] || return 0
-  for name in \
-    state.sqlite state.sqlite-shm state.sqlite-wal config.json qsd.lock qsyncd.lock .DS_Store; do
-    remove_managed_file "${legacy_root}/${name}" || return 1
-  done
-  remove_legacy_directory_files "${legacy_root}/bin" bin || return 1
-  remove_legacy_directory_files "${legacy_root}/logs" logs || return 1
-  remove_legacy_directory_files "${legacy_root}/manifests" manifests || return 1
-  remove_legacy_directory_files "${legacy_root}/rules" rules || return 1
-  remove_legacy_directory_files "${legacy_root}/tmp" tmp || return 1
+  [[ -e "${legacy_root}" || -L "${legacy_root}" ]] || return 0
+  remove_legacy_tree_contents "${legacy_root}" || return 1
   rmdir "${legacy_root}"
 }
 

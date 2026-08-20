@@ -9,6 +9,9 @@ target/
 .env
 .env.*
 
+# Isolated development worktrees
+.worktrees/
+
 # Local runtime state should live under ~/Library/Application Support/QuickSync,
 # but keep these ignored if tests create temporary local state.
 *.sqlite

@@ -18,3 +18,20 @@ jobs:
         run: cargo test --workspace --all-targets
       - name: Check
         run: cargo check --workspace --all-targets
+      - name: Shell syntax
+        run: >-
+          bash -n
+          scripts/install.sh
+          scripts/uninstall.sh
+          scripts/install-remote.sh
+          scripts/lib/cleanup-legacy.sh
+          scripts/tests/legacy-cleanup.sh
+          scripts/tests/branding-residue.sh
+      - name: Legacy cleanup safety
+        run: bash scripts/tests/legacy-cleanup.sh
+      - name: Branding residue
+        run: bash scripts/tests/branding-residue.sh
+      - name: Homebrew formula syntax
+        run: ruby -c packaging/homebrew/linker.rb
+      - name: LaunchAgent plist
+        run: plutil -lint packaging/launchagent/com.linker.linkerd.plist.in

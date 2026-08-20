@@ -621,7 +621,11 @@ wait_for_linker_daemon() {
           "${linker_binary}" status 2>/dev/null
       )"; then
       case $'\n'"${status_output}"$'\n' in
-        *$'\ndaemon running: yes\n'*) healthy=1 ;;
+        *$'\ndaemon installed: yes\n'*)
+          case $'\n'"${status_output}"$'\n' in
+            *$'\ndaemon running: yes\n'*) healthy=1 ;;
+          esac
+          ;;
       esac
     fi
     if [[ "${healthy}" == "1" ]]; then

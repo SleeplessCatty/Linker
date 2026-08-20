@@ -101,7 +101,6 @@ write_launchagent_plist \
   "${APP_SUPPORT_DIR}"
 
 stop_launchagent "${USER_UID}" "${PLIST_LABEL}" "${PLIST_PATH}"
-stop_legacy_daemon "${USER_HOME}" "${USER_UID}"
 
 if ! launchctl bootstrap "gui/${USER_UID}" "${PLIST_PATH}"; then
   legacy_cleanup_error "could not install LaunchAgent ${PLIST_LABEL}; legacy state was preserved"
@@ -118,6 +117,11 @@ if ! wait_for_linker_daemon \
   "${BIN_DIR}/linker" \
   "${APP_SUPPORT_DIR}"; then
   stop_launchagent "${USER_UID}" "${PLIST_LABEL}" "${PLIST_PATH}" || true
+  exit 1
+fi
+if ! stop_legacy_daemon "${USER_HOME}" "${USER_UID}"; then
+  stop_launchagent "${USER_UID}" "${PLIST_LABEL}" "${PLIST_PATH}" || true
+  legacy_cleanup_error "could not stop the legacy daemon; legacy state was preserved"
   exit 1
 fi
 

@@ -174,7 +174,31 @@ fn is_daemon_lock_held() -> bool {
             let _ = file.unlock();
             false
         }
-        Err(_) => true,
+        Err(err) => lock_error_indicates_running(&err),
+    }
+}
+
+fn lock_error_indicates_running(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::WouldBlock
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Error, ErrorKind};
+
+    use super::lock_error_indicates_running;
+
+    #[test]
+    fn only_lock_contention_indicates_a_running_daemon() {
+        assert!(lock_error_indicates_running(&Error::from(
+            ErrorKind::WouldBlock
+        )));
+        assert!(!lock_error_indicates_running(&Error::from(
+            ErrorKind::PermissionDenied
+        )));
+        assert!(!lock_error_indicates_running(&Error::from(
+            ErrorKind::Unsupported
+        )));
     }
 }
 

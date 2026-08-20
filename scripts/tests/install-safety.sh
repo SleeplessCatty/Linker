@@ -72,7 +72,7 @@ if [[ "${1:-}" == "status" ]]; then
       daemon_running=yes
     fi
   fi
-  echo "daemon installed: yes"
+  echo "daemon installed: ${LINKER_TEST_DAEMON_INSTALLED:-yes}"
   echo "daemon running: ${daemon_running}"
 fi
 LINKER
@@ -117,6 +117,10 @@ case "${command_name}" in
     exit 0
     ;;
   kickstart)
+    if [[ "${LINKER_TEST_KICKSTART_MODE:-success}" == "fail" ]]; then
+      echo "simulated kickstart failure" >&2
+      exit 6
+    fi
     exit 0
     ;;
 esac
@@ -145,6 +149,8 @@ set -e
 [[ "${install_status}" != "0" ]] || fail "simulated LaunchAgent failure was ignored"
 assert_exists "${LEGACY_ROOT}/bin/qs"
 assert_exists "${LEGACY_PLIST}"
+assert_exists "${LAUNCHCTL_STATE}"
+assert_missing "${NEW_LAUNCHCTL_STATE}"
 [[ "$(cat "${PLIST_VICTIM}")" == "source sentinel" ]] \
   || fail "LaunchAgent rendering overwrote a symlink target"
 [[ ! -L "${NEW_PLIST}" ]] || fail "new LaunchAgent plist remained a symlink"
@@ -153,7 +159,6 @@ plutil -lint "${NEW_PLIST}" >/dev/null
   || fail "binary installation overwrote a symlink target"
 [[ ! -L "${NEW_BIN_DIR}/linker" ]] || fail "installed binary remained a symlink"
 
-touch "${LAUNCHCTL_STATE}"
 set +e
 HOME="${TEST_HOME}" \
 PATH="${FAKE_BIN}:${PATH}" \
@@ -162,6 +167,27 @@ LINKER_TEST_LAUNCHCTL_STATE="${LAUNCHCTL_STATE}" \
 LINKER_TEST_NEW_LAUNCHCTL_STATE="${NEW_LAUNCHCTL_STATE}" \
 LINKER_TEST_HEALTH_ONCE_STATE="${HEALTH_ONCE_STATE}" \
 LINKER_TEST_BOOTSTRAP_MODE=success \
+LINKER_TEST_KICKSTART_MODE=fail \
+bash "${TEST_PROJECT}/scripts/install.sh" --link-dir "${LINK_DIR}" \
+  >> "${INSTALL_LOG}" 2>&1
+kickstart_status=$?
+set -e
+
+[[ "${kickstart_status}" != "0" ]] || fail "simulated kickstart failure was ignored"
+assert_exists "${LEGACY_ROOT}/bin/qs"
+assert_exists "${LEGACY_PLIST}"
+assert_exists "${LAUNCHCTL_STATE}"
+assert_missing "${NEW_LAUNCHCTL_STATE}"
+
+set +e
+HOME="${TEST_HOME}" \
+PATH="${FAKE_BIN}:${PATH}" \
+LINKER_TEST_PROJECT="${TEST_PROJECT}" \
+LINKER_TEST_LAUNCHCTL_STATE="${LAUNCHCTL_STATE}" \
+LINKER_TEST_NEW_LAUNCHCTL_STATE="${NEW_LAUNCHCTL_STATE}" \
+LINKER_TEST_HEALTH_ONCE_STATE="${HEALTH_ONCE_STATE}" \
+LINKER_TEST_BOOTSTRAP_MODE=success \
+LINKER_TEST_KICKSTART_MODE=success \
 LINKER_TEST_DAEMON_RUNNING=once \
 bash "${TEST_PROJECT}/scripts/install.sh" --link-dir "${LINK_DIR}" \
   >> "${INSTALL_LOG}" 2>&1
@@ -172,8 +198,10 @@ set -e
   || fail "installer purged legacy state after the new daemon exited"
 assert_exists "${LEGACY_ROOT}/bin/qs"
 assert_exists "${LEGACY_PLIST}"
+assert_exists "${LAUNCHCTL_STATE}"
+assert_missing "${NEW_LAUNCHCTL_STATE}"
 
-touch "${LAUNCHCTL_STATE}"
+set +e
 HOME="${TEST_HOME}" \
 PATH="${FAKE_BIN}:${PATH}" \
 LINKER_TEST_PROJECT="${TEST_PROJECT}" \
@@ -181,11 +209,36 @@ LINKER_TEST_LAUNCHCTL_STATE="${LAUNCHCTL_STATE}" \
 LINKER_TEST_NEW_LAUNCHCTL_STATE="${NEW_LAUNCHCTL_STATE}" \
 LINKER_TEST_HEALTH_ONCE_STATE="${HEALTH_ONCE_STATE}" \
 LINKER_TEST_BOOTSTRAP_MODE=success \
+LINKER_TEST_KICKSTART_MODE=success \
+LINKER_TEST_DAEMON_INSTALLED=no \
+LINKER_TEST_DAEMON_RUNNING=yes \
+bash "${TEST_PROJECT}/scripts/install.sh" --link-dir "${LINK_DIR}" \
+  >> "${INSTALL_LOG}" 2>&1
+missing_binary_status=$?
+set -e
+
+[[ "${missing_binary_status}" != "0" ]] \
+  || fail "installer accepted a running daemon whose binary was missing"
+assert_exists "${LEGACY_ROOT}/bin/qs"
+assert_exists "${LEGACY_PLIST}"
+assert_exists "${LAUNCHCTL_STATE}"
+assert_missing "${NEW_LAUNCHCTL_STATE}"
+
+HOME="${TEST_HOME}" \
+PATH="${FAKE_BIN}:${PATH}" \
+LINKER_TEST_PROJECT="${TEST_PROJECT}" \
+LINKER_TEST_LAUNCHCTL_STATE="${LAUNCHCTL_STATE}" \
+LINKER_TEST_NEW_LAUNCHCTL_STATE="${NEW_LAUNCHCTL_STATE}" \
+LINKER_TEST_HEALTH_ONCE_STATE="${HEALTH_ONCE_STATE}" \
+LINKER_TEST_BOOTSTRAP_MODE=success \
+LINKER_TEST_KICKSTART_MODE=success \
+LINKER_TEST_DAEMON_INSTALLED=yes \
 LINKER_TEST_DAEMON_RUNNING=yes \
 bash "${TEST_PROJECT}/scripts/install.sh" --link-dir "${LINK_DIR}" \
   >> "${INSTALL_LOG}" 2>&1
 
 assert_missing "${LEGACY_ROOT}"
 assert_missing "${LEGACY_PLIST}"
+assert_missing "${LAUNCHCTL_STATE}"
 
 echo "install safety tests passed"

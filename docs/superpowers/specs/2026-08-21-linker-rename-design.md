@@ -83,8 +83,8 @@ SQLite 表结构和 manifest schema 保持不变。由于旧运行时状态会�
 
 1. 校验用户、物理路径、链接目录和旧状态布局，并成功构建 `linker` 和 `linkerd`。
 2. 安装 Linker 二进制、受管命令链接和原子写入的 LaunchAgent plist。
-3. 停止旧 LaunchAgent，并验证服务确实消失。
-4. 启动 `linkerd`。
+3. 启动 `linkerd`，并连续确认 LaunchAgent、daemon 二进制和进程锁均健康。
+4. 停止旧 LaunchAgent，并验证服务确实消失。
 5. 仅在新 daemon 启动成功后，删除旧 plist、受管命令链接和旧 Application Support 工件。
 
 清理必须满足：
@@ -159,7 +159,7 @@ Formula 仅用于全新二进制安装，不执行用户级不兼容升级、旧
 - 清理链接前必须验证链接目标位于旧安装目录。
 - 删除旧状态前必须验证目标是用户 Application Support 下的精确旧目录，拒绝空路径、HOME 根目录和宽泛目录。
 - 构建必须在清理前完成，避免构建失败后提前破坏旧安装。
-- 安装后启动新 LaunchAgent 失败时保留已安装的 Linker 二进制和全部旧状态，允许用户修复环境后重试。
+- 安装后启动新 LaunchAgent 或健康检查失败时保留已安装的 Linker 二进制、全部旧状态以及仍在运行的旧 daemon，允许用户修复环境后重试。
 - 同步过程中的现有错误传播和 item 状态标记行为保持不变。
 
 ## 测试策略

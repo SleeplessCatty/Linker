@@ -75,7 +75,7 @@ Remote install:
 curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/install-remote.sh | bash
 ```
 
-Linker 0.2 is an incompatible clean cutover. Installation removes legacy managed state and command links, but never deletes configured source or target directories; associations must be added again. See [INSTALL.md](INSTALL.md) for the exact behavior.
+Linker 0.2 is an incompatible clean cutover. Installation removes legacy managed state and command links only after the new daemon starts; ambiguous paths or content fail closed. Configured source and target directories are never deleted, and associations must be added again. See [INSTALL.md](INSTALL.md) for the exact behavior.
 
 ## MVP Scope
 

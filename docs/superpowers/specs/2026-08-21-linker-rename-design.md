@@ -81,12 +81,11 @@ SQLite 表结构和 manifest schema 保持不变。由于旧运行时状态会�
 
 安装顺序：
 
-1. 成功构建 `linker` 和 `linkerd`。
-2. 停止并移除旧 LaunchAgent。
-3. 删除确实指向旧安装目录的旧命令链接。
-4. 删除旧 Application Support 目录中的数据库、manifest、规则、日志和二进制。
-5. 安装 Linker 二进制和 LaunchAgent。
-6. 启动 `linkerd`。
+1. 校验用户、物理路径、链接目录和旧状态布局，并成功构建 `linker` 和 `linkerd`。
+2. 安装 Linker 二进制、受管命令链接和原子写入的 LaunchAgent plist。
+3. 停止旧 LaunchAgent，并验证服务确实消失。
+4. 启动 `linkerd`。
+5. 仅在新 daemon 启动成功后，删除旧 plist、受管命令链接和旧 Application Support 工件。
 
 清理必须满足：
 
@@ -96,6 +95,10 @@ SQLite 表结构和 manifest schema 保持不变。由于旧运行时状态会�
 - 不删除任何源目录。
 - 不删除任何同步目标目录。
 - 清理后不自动迁移关联，用户需要重新运行 `linker add`。
+
+为同时满足彻底清理和数据安全，旧数据库只用于删除否决：如果其中记录的源目录或目标目录等于或位于旧状态根目录内，安装立即停止，数据库中的路径绝不会成为删除目标。清理不使用递归删除，只移除能证明属于应用的精确文件；发现未知目录、symlink ancestry、损坏数据库或其他不确定内容时一律 fail-closed 并保留旧状态。
+
+自定义命令链接目录必须已存在且由当前用户可写。`sudo` 只允许用于经过验证、无 symlink ancestry 的固定 `/usr/local/bin` 路径。LaunchAgent plist 通过同目录临时文件、XML escaping 和原子 rename 写入，不能跟随已有目标 symlink。
 
 为了定位旧安装，旧标识符只允许存在于隔离的清理实现和对应测试中。其他代码、配置和文档不得继续使用旧标识符。
 
@@ -138,6 +141,8 @@ https://github.com/SleeplessCatty/Linker
 
 Homebrew tap 使用 `SleeplessCatty/linker`。在 `v0.2.0` 发布归档及 SHA-256 可用之前，Formula 只提供 HEAD 安装，不能包含旧发布包 SHA 或虚构的新 SHA。
 
+Formula 仅用于全新二进制安装，不执行用户级不兼容升级、旧状态清理或 LaunchAgent 注册。已有 pre-0.2 安装必须先使用受保护的脚本安装器完成切换。
+
 本次源码修改不执行以下操作：
 
 - 不创建或移动 Git tag；
@@ -150,11 +155,11 @@ Homebrew tap 使用 `SleeplessCatty/linker`。在 `v0.2.0` 发布归档及 SHA-2
 
 ## 错误处理与安全边界
 
-- 清理旧 LaunchAgent 时，服务不存在不视为错误。
+- 清理旧 LaunchAgent 时，服务不存在不视为错误；其他停止错误必须中止，且删除前必须验证服务不再运行。
 - 清理链接前必须验证链接目标位于旧安装目录。
 - 删除旧状态前必须验证目标是用户 Application Support 下的精确旧目录，拒绝空路径、HOME 根目录和宽泛目录。
 - 构建必须在清理前完成，避免构建失败后提前破坏旧安装。
-- 安装后启动新 LaunchAgent 失败时保留已安装的 Linker 二进制，允许用户修复环境后重试。
+- 安装后启动新 LaunchAgent 失败时保留已安装的 Linker 二进制和全部旧状态，允许用户修复环境后重试。
 - 同步过程中的现有错误传播和 item 状态标记行为保持不变。
 
 ## 测试策略
@@ -175,6 +180,11 @@ Homebrew tap 使用 `SleeplessCatty/linker`。在 `v0.2.0` 发布归档及 SHA-2
 - 指向其他位置的同名链接保留；
 - 模拟源目录和目标目录保留；
 - 重复清理成功。
+- 根路径别名、UID 0 和 symlink ancestry 被拒绝；
+- 未知旧状态内容、旧状态根内的源/目标以及损坏数据库均 fail-closed；
+- daemon 停止失败时 plist、状态和二进制保持不变；
+- plist 目标 symlink 不会覆盖用户文件，XML 特殊字符正确转义；
+- 远程安装对 branch、tag 和 commit SHA 均解析到精确提交。
 
 最终验证命令包括：
 
@@ -183,8 +193,11 @@ cargo fmt --all -- --check
 cargo test --workspace --all-targets
 cargo check --workspace --all-targets
 cargo metadata --no-deps --format-version 1
-bash -n scripts/install.sh scripts/uninstall.sh scripts/install-remote.sh scripts/lib/cleanup-legacy.sh scripts/tests/legacy-cleanup.sh scripts/tests/branding-residue.sh
+bash -n scripts/install.sh scripts/uninstall.sh scripts/install-remote.sh scripts/lib/cleanup-legacy.sh scripts/tests/legacy-cleanup.sh scripts/tests/install-safety.sh scripts/tests/uninstall-safety.sh scripts/tests/remote-ref.sh scripts/tests/branding-residue.sh
 bash scripts/tests/legacy-cleanup.sh
+bash scripts/tests/install-safety.sh
+bash scripts/tests/uninstall-safety.sh
+bash scripts/tests/remote-ref.sh
 bash scripts/tests/branding-residue.sh
 test -x target/debug/linker
 test -x target/debug/linkerd

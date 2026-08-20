@@ -26,9 +26,18 @@ jobs:
           scripts/install-remote.sh
           scripts/lib/cleanup-legacy.sh
           scripts/tests/legacy-cleanup.sh
+          scripts/tests/install-safety.sh
+          scripts/tests/uninstall-safety.sh
+          scripts/tests/remote-ref.sh
           scripts/tests/branding-residue.sh
       - name: Legacy cleanup safety
         run: bash scripts/tests/legacy-cleanup.sh
+      - name: Install safety
+        run: bash scripts/tests/install-safety.sh
+      - name: Uninstall safety
+        run: bash scripts/tests/uninstall-safety.sh
+      - name: Remote ref resolution
+        run: bash scripts/tests/remote-ref.sh
       - name: Branding residue
         run: bash scripts/tests/branding-residue.sh
       - name: Homebrew formula syntax

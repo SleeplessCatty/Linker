@@ -29,6 +29,9 @@ class Linker < Formula
 
       Logs and state are stored under:
         ~/Library/Application Support/Linker
+
+      This formula is for fresh installs. It does not clean pre-0.2 user state
+      or manage a user LaunchAgent; use the guarded script installer to upgrade.
     EOS
   end
 

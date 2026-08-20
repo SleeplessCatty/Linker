@@ -27,6 +27,9 @@ Runtime state is stored outside the repository:
 - `scripts/uninstall.sh`: LaunchAgent and binary cleanup while preserving Linker state.
 - `scripts/lib/cleanup-legacy.sh`: guarded pre-0.2 daemon, command-link, and Application Support cleanup.
 - `scripts/tests/legacy-cleanup.sh`: isolated safety and idempotence tests for cleanup and managed links.
+- `scripts/tests/install-safety.sh`: failed-upgrade and atomic LaunchAgent-write regression tests.
+- `scripts/tests/uninstall-safety.sh`: daemon-stop failure regression test.
+- `scripts/tests/remote-ref.sh`: branch, tag, and commit fetch tests for remote installation.
 - `scripts/tests/branding-residue.sh`: repository-wide legacy-branding gate.
 - `packaging/launchagent/com.linker.linkerd.plist.in`: LaunchAgent template.
 - `packaging/homebrew/linker.rb`: starter Homebrew formula.
@@ -37,8 +40,8 @@ Runtime state is stored outside the repository:
 - There is no GUI yet; all workflows are CLI based.
 - The sync policy is latest-modified-wins without version history or merge UI.
 - Pre-0.2 application state is intentionally deleted during installation and is not migrated; source and target directories remain untouched.
-- Homebrew formula requires a real GitHub release tarball SHA before stable `brew install linker` works.
-- LaunchAgent install is macOS-user specific and may require manual review if Homebrew is used.
+- Homebrew formula requires a real GitHub release tarball SHA before stable `brew install linker` works and is intentionally not an upgrade path.
+- LaunchAgent installation and incompatible cleanup are handled only by the guarded script installer, not Homebrew.
 - `/usr/local/bin` linking may require `sudo` on machines where the directory is owned by `root`.
 - The daemon watches configured source/target roots and also performs a 5-minute reconciliation pass; very large trees may need future scan optimization.
 
@@ -49,8 +52,11 @@ Last local verification:
 ```bash
 cargo test --workspace --all-targets
 cargo check --workspace --all-targets
-bash -n scripts/install.sh scripts/uninstall.sh scripts/install-remote.sh scripts/lib/cleanup-legacy.sh scripts/tests/legacy-cleanup.sh scripts/tests/branding-residue.sh
+bash -n scripts/install.sh scripts/uninstall.sh scripts/install-remote.sh scripts/lib/cleanup-legacy.sh scripts/tests/legacy-cleanup.sh scripts/tests/install-safety.sh scripts/tests/uninstall-safety.sh scripts/tests/remote-ref.sh scripts/tests/branding-residue.sh
 bash scripts/tests/legacy-cleanup.sh
+bash scripts/tests/install-safety.sh
+bash scripts/tests/uninstall-safety.sh
+bash scripts/tests/remote-ref.sh
 bash scripts/tests/branding-residue.sh
 ruby -c packaging/homebrew/linker.rb
 plutil -lint packaging/launchagent/com.linker.linkerd.plist.in

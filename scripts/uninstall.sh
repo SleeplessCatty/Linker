@@ -50,17 +50,37 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-cleanup_legacy_install "${HOME}" "${LINK_DIR}" "$(id -u)"
+USER_UID="$(id -u)"
+USER_HOME="$(trim_trailing_slash "${HOME}")"
+APP_SUPPORT_DIR="${USER_HOME}/Library/Application Support/Linker"
+BIN_DIR="${APP_SUPPORT_DIR}/bin"
+LAUNCH_AGENTS_DIR="${USER_HOME}/Library/LaunchAgents"
+PLIST_PATH="${LAUNCH_AGENTS_DIR}/${PLIST_LABEL}.plist"
 
-launchctl bootout "gui/$(id -u)" "${PLIST_PATH}" >/dev/null 2>&1 || true
+validate_cleanup_inputs "${USER_HOME}" "${LINK_DIR}" "${USER_UID}"
+LINK_DIR="$(trim_trailing_slash "${LINK_DIR}")"
+validate_safe_directory_path "${APP_SUPPORT_DIR}"
+validate_safe_directory_path "${BIN_DIR}"
+validate_safe_directory_path "${LAUNCH_AGENTS_DIR}"
 
-rm -f "${PLIST_PATH}"
-rm -f "${BIN_DIR}/linker" "${BIN_DIR}/linkerd"
+if { [[ "${REMOVE_LINKS}" == "1" ]] \
+    && { link_points_into_dir "${LINK_DIR}/linker" "${BIN_DIR}" \
+      || link_points_into_dir "${LINK_DIR}/linkerd" "${BIN_DIR}"; }; } \
+  || legacy_managed_links_present "${USER_HOME}" "${LINK_DIR}"; then
+  authorize_link_directory "${LINK_DIR}"
+fi
+
+stop_launchagent "${USER_UID}" "${PLIST_LABEL}" "${PLIST_PATH}"
+cleanup_legacy_install "${USER_HOME}" "${LINK_DIR}" "${USER_UID}"
 
 if [[ "${REMOVE_LINKS}" == "1" ]]; then
   remove_link_if_points_into "${LINK_DIR}/linker" "${BIN_DIR}"
   remove_link_if_points_into "${LINK_DIR}/linkerd" "${BIN_DIR}"
 fi
+
+remove_managed_file "${PLIST_PATH}"
+remove_managed_file "${BIN_DIR}/linker"
+remove_managed_file "${BIN_DIR}/linkerd"
 
 cat <<EOF
 Linker daemon uninstalled.

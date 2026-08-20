@@ -20,7 +20,7 @@ Status: completed
 - [x] Initialize SQLite state database
 - [x] Implement `linker add <source-directory> <target-parent-directory>`
 - [x] Implement `linker list`
-- [x] Implement basic `linker status [name]`
+- [x] Implement `linker status` daemon health
 - [x] Create target directory under the target parent
 - [x] Write manifest under Application Support
 - [x] Write rule snapshot under Application Support
@@ -34,7 +34,7 @@ Status: completed
 - [x] Implement `linker rule <name> exclude <pattern>`
 - [x] Implement `linker rule <name> include <pattern>`
 - [x] Implement `linker rule <name> list`
-- [x] Show exclude count in status
+- [x] Show exclude count in `linker list`
 - [ ] Dry scan report during add
 
 ## Phase 3: Manual Sync Engine

@@ -13,6 +13,8 @@ Installing Linker 0.2 performs a clean cutover from any pre-0.2 installation:
 
 Legacy associations are not migrated. Add them again with `linker add` after installation. The installer also refuses to overwrite unrelated files or links already named `linker` or `linkerd`.
 
+Cleanup is fail-closed. It validates physical paths, rejects symlink ancestry and unrecognized legacy content, and uses the legacy database only to veto deletion when a recorded source or target is inside the legacy state root. It never deletes paths obtained from that database. The old state is removed only after the new daemon starts successfully; otherwise it remains available for recovery.
+
 ## Install With Script
 
 From a local checkout:
@@ -32,6 +34,8 @@ The script:
 Linker does not need a global workspace initialization step. Add each directory by passing a source directory and a target parent directory.
 
 Creating command links under `/usr/local/bin` may ask for your administrator password because that directory is usually owned by `root`.
+
+`sudo` is used only for the fixed `/usr/local/bin` location. A custom `--link-dir` must already exist and be writable by the current user.
 
 If you do not want command links:
 
@@ -64,10 +68,10 @@ curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/
 Install a specific branch, tag, or commit:
 
 ```bash
-LINKER_REF=v0.2.0 curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/install-remote.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/install-remote.sh | LINKER_REF=v0.2.0 bash
 ```
 
-The remote installer requires `git` and Rust/Cargo on the target Mac. It clones the repository into a temporary directory, then runs `scripts/install.sh`.
+The remote installer requires `git` and Rust/Cargo on the target Mac. It fetches the selected branch, tag, or commit into a temporary directory, then runs `scripts/install.sh`. A legacy database cleanup also requires the macOS `sqlite3` command so the installer can fail closed around recorded source and target paths.
 
 ## Link Into /usr/local/bin
 
@@ -81,14 +85,14 @@ The remote installer requires `git` and Rust/Cargo on the target Mac. It clones 
 You can choose another link directory:
 
 ```bash
-./scripts/install.sh --link-dir /usr/local/bin
+mkdir -p "$HOME/.local/bin"
+./scripts/install.sh --link-dir "$HOME/.local/bin"
 ```
 
-If you installed without links, create them manually:
+If you installed without links, rerun the guarded installer when you want them:
 
 ```bash
-sudo ln -sf "$HOME/Library/Application Support/Linker/bin/linker" /usr/local/bin/linker
-sudo ln -sf "$HOME/Library/Application Support/Linker/bin/linkerd" /usr/local/bin/linkerd
+./scripts/install.sh
 ```
 
 Verify:
@@ -104,11 +108,7 @@ To remove those links:
 ./scripts/uninstall.sh
 ```
 
-or manually:
-
-```bash
-sudo rm -f /usr/local/bin/linker /usr/local/bin/linkerd
-```
+The script removes a command link only when its exact target is Linker's managed binary. It leaves unrelated files and links untouched.
 
 ## Homebrew Formula
 
@@ -145,7 +145,7 @@ After publishing a stable GitHub release, add `url` and `sha256` to the formula.
 curl -L https://github.com/<user>/Linker/archive/refs/tags/v0.2.0.tar.gz | shasum -a 256
 ```
 
-The formula installs the binaries. The LaunchAgent still needs a small post-install setup because it contains user-specific paths under `~/Library/Application Support/Linker`.
+The formula installs binaries and a LaunchAgent template only. It does not manage user LaunchAgents or perform the incompatible pre-0.2 cleanup, so it is a fresh-install path, not an upgrade path. Existing pre-0.2 users must run the guarded script installer first.
 
 After the release exists, add its `url` and `sha256` before documenting plain `brew install linker` as supported.
 

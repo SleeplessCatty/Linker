@@ -55,16 +55,35 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+USER_UID="$(id -u)"
+USER_HOME="$(trim_trailing_slash "${HOME}")"
+APP_SUPPORT_DIR="${USER_HOME}/Library/Application Support/Linker"
+BIN_DIR="${APP_SUPPORT_DIR}/bin"
+LOG_DIR="${APP_SUPPORT_DIR}/logs"
+LAUNCH_AGENTS_DIR="${USER_HOME}/Library/LaunchAgents"
+PLIST_PATH="${LAUNCH_AGENTS_DIR}/${PLIST_LABEL}.plist"
+
+validate_cleanup_inputs "${USER_HOME}" "${LINK_DIR}" "${USER_UID}"
+LINK_DIR="$(trim_trailing_slash "${LINK_DIR}")"
+
 cd "${ROOT_DIR}"
 cargo build --release
+
+validate_legacy_cleanup "${USER_HOME}" "${LINK_DIR}" "${USER_UID}"
+
+if [[ "${CREATE_LINKS}" == "1" ]] \
+  || legacy_managed_links_present "${USER_HOME}" "${LINK_DIR}"; then
+  authorize_link_directory "${LINK_DIR}"
+fi
 
 if [[ "${CREATE_LINKS}" == "1" ]]; then
   ensure_link_available "${LINK_DIR}/linker" "${BIN_DIR}/linker"
   ensure_link_available "${LINK_DIR}/linkerd" "${BIN_DIR}/linkerd"
 fi
 
-cleanup_legacy_install "${HOME}" "${LINK_DIR}" "$(id -u)"
-mkdir -p "${BIN_DIR}" "${LOG_DIR}" "${LAUNCH_AGENTS_DIR}"
+ensure_safe_directory "${BIN_DIR}"
+ensure_safe_directory "${LOG_DIR}"
+ensure_safe_directory "${LAUNCH_AGENTS_DIR}"
 
 install -m 0755 "${ROOT_DIR}/target/release/linker" "${BIN_DIR}/linker"
 install -m 0755 "${ROOT_DIR}/target/release/linkerd" "${BIN_DIR}/linkerd"
@@ -74,15 +93,27 @@ if [[ "${CREATE_LINKS}" == "1" ]]; then
   install_managed_link "${LINK_DIR}/linkerd" "${BIN_DIR}/linkerd"
 fi
 
-sed \
-  -e "s#__LINKERD_PATH__#${BIN_DIR}/linkerd#g" \
-  -e "s#__LOG_DIR__#${LOG_DIR}#g" \
-  -e "s#__APP_SUPPORT_DIR__#${APP_SUPPORT_DIR}#g" \
-  "${PLIST_TEMPLATE}" > "${PLIST_PATH}"
+write_launchagent_plist \
+  "${PLIST_TEMPLATE}" \
+  "${PLIST_PATH}" \
+  "${BIN_DIR}/linkerd" \
+  "${LOG_DIR}" \
+  "${APP_SUPPORT_DIR}"
 
-launchctl bootout "gui/$(id -u)" "${PLIST_PATH}" >/dev/null 2>&1 || true
-launchctl bootstrap "gui/$(id -u)" "${PLIST_PATH}"
-launchctl kickstart -k "gui/$(id -u)/${PLIST_LABEL}"
+stop_launchagent "${USER_UID}" "${PLIST_LABEL}" "${PLIST_PATH}"
+stop_legacy_daemon "${USER_HOME}" "${USER_UID}"
+
+if ! launchctl bootstrap "gui/${USER_UID}" "${PLIST_PATH}"; then
+  legacy_cleanup_error "could not install LaunchAgent ${PLIST_LABEL}; legacy state was preserved"
+  exit 1
+fi
+if ! launchctl kickstart -k "gui/${USER_UID}/${PLIST_LABEL}"; then
+  stop_launchagent "${USER_UID}" "${PLIST_LABEL}" "${PLIST_PATH}" || true
+  legacy_cleanup_error "could not start LaunchAgent ${PLIST_LABEL}; legacy state was preserved"
+  exit 1
+fi
+
+remove_legacy_artifacts "${USER_HOME}" "${LINK_DIR}" "${USER_UID}"
 
 cat <<EOF
 Linker installed.

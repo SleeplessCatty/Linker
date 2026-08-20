@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/
 Install a specific tag:
 
 ```bash
-LINKER_REF=v0.2.0 curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/install-remote.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/install-remote.sh | LINKER_REF=v0.2.0 bash
 ```
 
 ## Homebrew Tap
@@ -56,6 +56,8 @@ The checked-in formula is intentionally `HEAD`-only until the `v0.2.0` release e
 ```bash
 brew install --HEAD linker
 ```
+
+The formula is for fresh installs. It does not perform the incompatible pre-0.2 user-state cleanup or install a user LaunchAgent; existing users must complete the guarded script upgrade first.
 
 For a stable formula, publish a GitHub release tag and add `url` plus `sha256`:
 

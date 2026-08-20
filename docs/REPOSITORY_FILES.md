@@ -42,8 +42,11 @@ Do not commit generated or machine-local files:
 cargo fmt --all -- --check
 cargo test --workspace --all-targets
 cargo check --workspace --all-targets
-bash -n scripts/install.sh scripts/uninstall.sh scripts/install-remote.sh scripts/lib/cleanup-legacy.sh scripts/tests/legacy-cleanup.sh scripts/tests/branding-residue.sh
+bash -n scripts/install.sh scripts/uninstall.sh scripts/install-remote.sh scripts/lib/cleanup-legacy.sh scripts/tests/legacy-cleanup.sh scripts/tests/install-safety.sh scripts/tests/uninstall-safety.sh scripts/tests/remote-ref.sh scripts/tests/branding-residue.sh
 bash scripts/tests/legacy-cleanup.sh
+bash scripts/tests/install-safety.sh
+bash scripts/tests/uninstall-safety.sh
+bash scripts/tests/remote-ref.sh
 bash scripts/tests/branding-residue.sh
 ruby -c packaging/homebrew/linker.rb
 plutil -lint packaging/launchagent/com.linker.linkerd.plist.in

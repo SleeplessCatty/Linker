@@ -165,6 +165,9 @@ struct Plan {
     /// entries. Baseline paths inside them are left untouched instead of being
     /// read through the wrong entry kind.
     opaque: Vec<PathBuf>,
+    /// The global ignore file this plan was built from, with its content hash,
+    /// re-checked before any change is applied.
+    global_ignore: Option<(PathBuf, String)>,
     /// How this scan resolves content, controls and conflicts.
     options: PlanOptions,
 }
@@ -218,14 +221,34 @@ fn describe_kind(kind: Option<Kind>) -> &'static str {
     }
 }
 
+/// Baseline keys are Rust strings, so a path outside UTF-8 cannot be tracked.
+/// Such entries are skipped like any other unsupported entry instead of
+/// failing the whole association; macOS enforces UTF-8 on its own volumes, so
+/// this only arises through a foreign filesystem.
+fn path_is_trackable(relative: &Path) -> bool {
+    relative.to_str().is_some()
+}
+
 fn key(path: &Path) -> Result<String> {
     path.to_str()
         .map(str::to_owned)
         .ok_or_else(|| std::io::Error::other("non-UTF-8 sync path").into())
 }
 
+/// Entry kinds already known from a directory listing, so a scan does not have
+/// to resolve the parent chain again for every metadata read.
+#[derive(Debug, Clone, Copy)]
+struct Kinds {
+    local: Option<Kind>,
+    cloud: Option<Kind>,
+}
+
 fn read_meta(tree: &Tree, relative: &Path) -> Result<Option<FileMeta>> {
-    match tree.kind(relative)? {
+    read_meta_known(tree, relative, tree.kind(relative)?)
+}
+
+fn read_meta_known(tree: &Tree, relative: &Path, kind: Option<Kind>) -> Result<Option<FileMeta>> {
+    match kind {
         None => Ok(None),
         Some(Kind::File) => {
             let mut file = tree.file(relative)?;
@@ -270,9 +293,16 @@ fn operation(
     relative: &Path,
     previous: &BTreeMap<String, StoredFileState>,
     options: PlanOptions,
+    kinds: Option<Kinds>,
 ) -> Result<Operation> {
-    let local = read_meta(&roots.local, roots.local_rel(relative))?;
-    let cloud = read_meta(&roots.cloud, roots.cloud_rel(relative))?;
+    let local = match kinds {
+        Some(kinds) => read_meta_known(&roots.local, roots.local_rel(relative), kinds.local)?,
+        None => read_meta(&roots.local, roots.local_rel(relative))?,
+    };
+    let cloud = match kinds {
+        Some(kinds) => read_meta_known(&roots.cloud, roots.cloud_rel(relative), kinds.cloud)?,
+        None => read_meta(&roots.cloud, roots.cloud_rel(relative))?,
+    };
     let decision = restore_guard(
         decide(
             local.as_ref(),
@@ -302,7 +332,7 @@ impl Plan {
         };
         if roots.local_file.is_some() {
             plan.files
-                .push(operation(roots, Path::new(""), previous, options)?);
+                .push(operation(roots, Path::new(""), previous, options, None)?);
             return Ok(plan);
         }
         plan.load_global_rules(global_ignore)?;
@@ -316,7 +346,8 @@ impl Plan {
             } else if !plan.observed.contains(relative) && !plan.opaque_path(Path::new(relative)) {
                 // Do not infer deletion through a symlink or an unexpected file type.
                 let rel = Path::new(relative);
-                plan.files.push(operation(roots, rel, previous, options)?);
+                plan.files
+                    .push(operation(roots, rel, previous, options, None)?);
             }
         }
         Ok(plan)
@@ -339,10 +370,9 @@ impl Plan {
         };
         self.warnings
             .extend(self.rules.add(Path::new(""), path, &contents));
-        self.documents.push((
-            path.to_path_buf(),
-            format!("{:x}", Sha256::digest(contents.as_bytes())),
-        ));
+        let hash = format!("{:x}", Sha256::digest(contents.as_bytes()));
+        self.documents.push((path.to_path_buf(), hash.clone()));
+        self.global_ignore = Some((path.to_path_buf(), hash));
         Ok(())
     }
 
@@ -354,7 +384,7 @@ impl Plan {
     ) -> Result<()> {
         let control = directory.join(".gitignore");
         let stored = key(&control)?;
-        let op = operation(roots, &control, previous, self.options).map_err(|error| {
+        let op = operation(roots, &control, previous, self.options, None).map_err(|error| {
             std::io::Error::other(format!(
                 "cannot resolve control {}: {error}",
                 control.display()
@@ -396,6 +426,13 @@ impl Plan {
                 continue;
             }
             let rel = directory.join(name);
+            if !path_is_trackable(&rel) {
+                self.unsupported.push((
+                    rel.clone(),
+                    "the name is not valid UTF-8; such entries cannot be tracked and are never synchronized".into(),
+                ));
+                continue;
+            }
             let local = roots.local.kind(&rel)?;
             let cloud = roots.cloud.kind(&rel)?;
             let is_dir = local == Some(Kind::Directory) || cloud == Some(Kind::Directory);
@@ -428,8 +465,13 @@ impl Plan {
                 self.visit(roots, &rel, previous)?;
             } else if local == Some(Kind::File) || cloud == Some(Kind::File) {
                 self.observed.insert(key(&rel)?);
-                self.files
-                    .push(operation(roots, &rel, previous, self.options)?);
+                self.files.push(operation(
+                    roots,
+                    &rel,
+                    previous,
+                    self.options,
+                    Some(Kinds { local, cloud }),
+                )?);
             } else {
                 // Unsupported filesystem entries are never followed or synchronized.
                 self.observed.insert(key(&rel)?);
@@ -438,7 +480,7 @@ impl Plan {
                 self.unsupported.push((
                     rel.clone(),
                     format!(
-                        "source is {}, target is {}",
+                        "source is {}, target is {}; symbolic links and special files are never synchronized",
                         describe_kind(local),
                         describe_kind(cloud)
                     ),
@@ -483,6 +525,19 @@ impl Plan {
         if !roots.local.is_current()? || !roots.cloud.is_current()? {
             return Err(std::io::Error::other("association root changed during scan").into());
         }
+        if let Some((path, hash)) = &self.global_ignore {
+            let changed = match fs::read_to_string(path) {
+                Ok(contents) => format!("{:x}", Sha256::digest(contents.as_bytes())) != *hash,
+                Err(_) => true,
+            };
+            if changed {
+                return Err(std::io::Error::other(format!(
+                    "global ignore file changed during scan; retry: {}",
+                    path.display()
+                ))
+                .into());
+            }
+        }
         for op in &self.controls {
             verify_operation(roots, op)?;
         }
@@ -503,18 +558,53 @@ fn verify_operation(roots: &Roots, op: &Operation) -> Result<()> {
     Ok(())
 }
 
+/// True when the recorded baseline already describes both sides exactly, so an
+/// unchanged pass has nothing to write back.
+fn recorded_state_matches(
+    stored: Option<&StoredFileState>,
+    local: Option<&FileMeta>,
+    cloud: Option<&FileMeta>,
+) -> bool {
+    let Some(stored) = stored else {
+        return false;
+    };
+    !stored.deleted
+        && stored.local_hash.as_deref() == local.map(|meta| meta.hash.as_str())
+        && stored.local_mtime == local.map(|meta| meta.mtime)
+        && stored.local_size == local.map(|meta| meta.size)
+        && stored.cloud_hash.as_deref() == cloud.map(|meta| meta.hash.as_str())
+        && stored.cloud_mtime == cloud.map(|meta| meta.mtime)
+        && stored.cloud_size == cloud.map(|meta| meta.size)
+}
+
 fn apply(
     db: &StateDb,
     item: &Item,
     roots: &Roots,
+    previous: &BTreeMap<String, StoredFileState>,
     op: &Operation,
     summary: &mut SyncSummary,
 ) -> Result<()> {
     let relative = key(&op.relative)?;
     let mut local = op.local.clone();
     let mut cloud = op.cloud.clone();
-    if op.decision != Decision::Deleted {
+    // Only an operation that writes needs the pre-mutation re-check: a no-op
+    // changes nothing, and the scan's own read already rejects a file that
+    // changed while it was being read.
+    if !matches!(op.decision, Decision::Noop | Decision::Deleted) {
         verify_operation(roots, op)?;
+    }
+    // Converged paths keep their recorded baseline instead of being rewritten
+    // every pass, which is what makes a steady-state scan cheap.
+    if op.decision == Decision::Noop
+        && recorded_state_matches(
+            previous.get(&relative),
+            op.local.as_ref(),
+            op.cloud.as_ref(),
+        )
+    {
+        summary.unchanged += 1;
+        return Ok(());
     }
     match op.decision {
         Decision::Noop => summary.unchanged += 1,
@@ -661,7 +751,7 @@ fn run_sync(db: &StateDb, item: &Item, initial: bool) -> Result<SyncSummary> {
         db.forget_file_state(&item.id, rel)?;
     }
     for op in &plan.controls {
-        apply(db, item, &roots, op, &mut summary)?;
+        apply(db, item, &roots, &previous, op, &mut summary)?;
     }
     for (rel, directory) in &plan.prune {
         let removed = roots.cloud.remove(rel, *directory).map_err(|error| {
@@ -679,7 +769,7 @@ fn run_sync(db: &StateDb, item: &Item, initial: bool) -> Result<SyncSummary> {
         }
     }
     for op in &plan.files {
-        apply(db, item, &roots, op, &mut summary)?;
+        apply(db, item, &roots, &previous, op, &mut summary)?;
     }
     db.mark_item_synced(&item.id)?;
     Ok(summary)
@@ -1014,7 +1104,7 @@ pub fn check_item(db: &StateDb, item: &Item) -> Result<CheckReport> {
             class: "unsupported_entry".into(),
             side: "both".into(),
             path: analysis.roots.local.path.join(relative),
-            detail: format!("{detail}; symbolic links and special files are never synchronized"),
+            detail: detail.clone(),
             blocks: false,
         });
     }
@@ -1169,7 +1259,7 @@ impl<'a> RepairPass<'a> {
                 action: "skip_unsupported".into(),
                 side: "both".into(),
                 path: roots.local.path.join(relative),
-                note: format!("{detail}; symbolic links and special files are never synchronized"),
+                note: detail.clone(),
             });
         }
         // Deterministic output regardless of scan order.
@@ -1229,7 +1319,14 @@ impl<'a> RepairPass<'a> {
                 });
                 if !self.dry_run {
                     let resolved = resolved_operation(op, decision);
-                    apply(db, item, roots, &resolved, &mut self.summary)?;
+                    apply(
+                        db,
+                        item,
+                        roots,
+                        self.scope.previous,
+                        &resolved,
+                        &mut self.summary,
+                    )?;
                 }
             }
             Decision::DeleteLocal | Decision::DeleteCloud => {
@@ -1266,7 +1363,14 @@ impl<'a> RepairPass<'a> {
                 });
                 if !self.dry_run {
                     let resolved = resolved_operation(op, decision);
-                    apply(db, item, roots, &resolved, &mut self.summary)?;
+                    apply(
+                        db,
+                        item,
+                        roots,
+                        self.scope.previous,
+                        &resolved,
+                        &mut self.summary,
+                    )?;
                 }
             }
         }
@@ -1336,7 +1440,7 @@ impl<'a> RepairPass<'a> {
         }
         loser.remove_recursive(relative)?;
         for file in files {
-            let op = operation(roots, &file, previous, options)?;
+            let op = operation(roots, &file, previous, options, None)?;
             let decision = if source_wins {
                 Decision::CopyLocalToCloud
             } else {
@@ -1348,7 +1452,7 @@ impl<'a> RepairPass<'a> {
                 cloud: op.cloud,
                 decision,
             };
-            apply(db, item, roots, &resolved, &mut self.summary)?;
+            apply(db, item, roots, previous, &resolved, &mut self.summary)?;
         }
         Ok(())
     }
@@ -1446,6 +1550,19 @@ fn run_repair(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn audit_roots(local: &Path, cloud: &Path) -> Item {
+        Item {
+            id: "id".into(),
+            name: "demo".into(),
+            item_type: "directory".into(),
+            local_path: local.to_str().unwrap().into(),
+            cloud_path: cloud.to_str().unwrap().into(),
+            status: "active".into(),
+            last_sync_at: None,
+            last_error: None,
+        }
+    }
 
     fn meta(hash: &str, mtime: i64) -> FileMeta {
         FileMeta {
@@ -1594,5 +1711,50 @@ mod tests {
             Decision::CopyCloudToLocal
         );
         assert_eq!(restore_guard(Decision::Noop, true), Decision::Noop);
+    }
+    #[test]
+    fn entries_outside_utf8_are_never_trackable() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        assert!(path_is_trackable(Path::new("ok.txt")));
+        assert!(path_is_trackable(Path::new("nested/中文.md")));
+        assert!(!path_is_trackable(Path::new(OsStr::from_bytes(
+            b"bad\xff.txt"
+        ))));
+    }
+
+    #[test]
+    fn a_global_ignore_file_that_changes_during_a_pass_is_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join("source");
+        let cloud = tmp.path().join("target");
+        fs::create_dir(&local).unwrap();
+        fs::create_dir(&cloud).unwrap();
+        fs::write(local.join("keep.txt"), "keep").unwrap();
+        fs::write(cloud.join("keep.txt"), "keep").unwrap();
+        let global = tmp.path().join("global.gitignore");
+        fs::write(&global, "notes.md\n").unwrap();
+
+        let item = audit_roots(&local, &cloud);
+        let roots = Roots::open(&item).unwrap();
+        let plan =
+            Plan::build(&roots, &BTreeMap::new(), PlanOptions::sync(false), &global).unwrap();
+        plan.verify_controls(&roots).unwrap();
+
+        fs::write(&global, ".DS_Store\n").unwrap();
+        let error = plan.verify_controls(&roots).unwrap_err().to_string();
+        assert!(
+            error.contains("global ignore file changed during scan"),
+            "{error}"
+        );
+
+        fs::remove_file(&global).unwrap();
+        assert!(plan.verify_controls(&roots).is_err());
+
+        let absent = tmp.path().join("absent.gitignore");
+        let plan =
+            Plan::build(&roots, &BTreeMap::new(), PlanOptions::sync(false), &absent).unwrap();
+        plan.verify_controls(&roots).unwrap();
     }
 }

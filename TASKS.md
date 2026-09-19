@@ -116,6 +116,16 @@ The current CLI/ignore/sync additions have implementation and test coverage, sub
 - [x] Report cleanup failure with the association already removed, the source kept and the target possibly partial
 - [x] Cover partial cleanup, injected database failure and symlink-swap regressions
 
+## Scan Cost and Rule Robustness
+
+- [x] Reuse the entry kinds from each directory listing instead of re-resolving the parent chain per metadata read
+- [x] Skip the pre-mutation re-check and the baseline write for no-op paths
+- [x] Detect a global ignore file that changes during a pass and fail the pass closed
+- [x] Strip a UTF-8 byte order mark so an editor-saved control file still applies its first rule
+- [x] Skip entries whose names are outside UTF-8 as unsupported instead of aborting the association
+- [x] Cover the rule engine with a full matching table and the optimisation boundaries with unit tests
+- [x] Verify a 3013-file tree end to end: initial sync, 400 modifications, 100 deletions, concurrent passes and repair, each followed by an independent byte comparison
+
 ## Global Ignore File
 
 - [x] Optional `global.gitignore` beside the state database, applied to every directory association at the association root

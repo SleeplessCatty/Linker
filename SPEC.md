@@ -177,15 +177,25 @@ For each item:
 1. take per-association cross-process lock and reload item
 2. resolve controls top-down; parse effective rules; build complete plan
 3. inspect normal files and target-only ignored paths; do not read ignored source contents
-4. verify root identities and control snapshots before mutation
+   (entry kinds from the directory listing are reused instead of re-resolving every parent chain)
+4. verify root identities, the global ignore snapshot and control snapshots before mutation
 5. retire ignored-path baselines so target cleanup cannot delete source later
-6. apply control operations, prune ignored targets, apply normal file operations
-7. update file_states and sync summary; release lock
+6. apply control operations, prune ignored targets, apply normal file operations;
+   only operations that write re-check their inputs, and converged paths keep their
+   recorded baseline instead of rewriting it
+7. update file_states for paths whose recorded state changed and write the sync summary;
+   release lock
 ```
 
 Relative paths are normal paths inside the associated directory. `tree.rs` pins root/parent directory descriptors, uses no-follow relative opens and unlink operations, and atomically renames copied files. Symlink data files are not synchronized; an ignored target symlink itself can be removed without following it. Directory/control type conflicts and I/O errors are surfaced, not treated as missing rules. Cleanup summaries count successful file/link removals separately from directory removals.
 
 A target root that is absent at the start of an existing association's pass is recreated; when the baselines still record target content, that pass restores from the source instead of reading every path as a target-side deletion. The summary reports `target_root_recovered`, the CLI warns, and the daemon logs the flag, so an unmounted, moved or lost target root cannot delete the whole source tree. An existing target root keeps ordinary per-file semantics, including that removing its last file propagates; `check` names those paths before a sync runs and `repair` can refill the target without deleting source content.
+
+## Scan Cost
+
+A pass reads each side of every non-ignored path once. Directory listings supply the entry kinds, so a metadata read resolves the pinned parent descriptor rather than walking the parent chain again; a no-op operation is neither re-verified nor written back, because it changes nothing and the recorded baseline already describes both sides. Copies remain the expensive case: each copied file is written to a temporary name, flushed to disk and renamed, which is what makes an initial sync of thousands of files take seconds rather than milliseconds.
+
+Local measurement on a synthetic 3013-file / 13 MB tree (depth up to 12, Unicode and 200-character names): initial sync 22 s, steady-state pass 3.6 s, `check` 2.5 s, and an independent byte-level comparison of both trees reports every file identical. Reusing the listed kinds and skipping no-op verification and writes moved the steady-state pass from 6.6 s to 3.6 s.
 
 ## Dry-Run Contract
 

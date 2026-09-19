@@ -63,55 +63,56 @@ pub fn doctor_report() -> DoctorReport {
         )),
     }
 
-    match paths::state_db_path().and_then(|path| StateDb::open(&path).map(|_| path)) {
-        Ok(path) => checks.push(ok("State Database", format!("opened {}", path.display()))),
-        Err(err) => checks.push(error(
-            "State Database",
-            err.to_string(),
-            "Check Linker Application Support permissions.",
-        )),
-    }
-
-    match paths::state_db_path().and_then(|path| StateDb::open(&path)) {
-        Ok(db) => match db.list_items() {
-            Ok(items) if items.is_empty() => checks.push(ok(
-                "Sync Associations",
-                "no configured directory associations".to_string(),
-            )),
-            Ok(items) => {
-                let mut missing = Vec::new();
-                for item in &items {
-                    if !Path::new(&item.local_path).is_dir() {
-                        missing.push(format!("source missing for {}", item.name));
+    match paths::state_db_path().and_then(|path| StateDb::open(&path).map(|db| (path, db))) {
+        Ok((path, db)) => {
+            checks.push(ok("State Database", format!("opened {}", path.display())));
+            match db.list_items() {
+                Ok(items) if items.is_empty() => checks.push(ok(
+                    "Sync Associations",
+                    "no configured directory associations".to_string(),
+                )),
+                Ok(items) => {
+                    let mut missing = Vec::new();
+                    for item in &items {
+                        if !Path::new(&item.local_path).is_dir() {
+                            missing.push(format!("source missing for {}", item.name));
+                        }
+                        if !Path::new(&item.cloud_path).is_dir() {
+                            missing.push(format!("target missing for {}", item.name));
+                        }
                     }
-                    if !Path::new(&item.cloud_path).is_dir() {
-                        missing.push(format!("target missing for {}", item.name));
+                    if missing.is_empty() {
+                        checks.push(ok(
+                            "Sync Associations",
+                            format!("{} configured item(s) are reachable", items.len()),
+                        ));
+                    } else {
+                        checks.push(error(
+                            "Sync Associations",
+                            missing.join("; "),
+                            "Run `linker status`, then fix the missing directory or remove the association.",
+                        ));
                     }
                 }
-                if missing.is_empty() {
-                    checks.push(ok(
-                        "Sync Associations",
-                        format!("{} configured item(s) are reachable", items.len()),
-                    ));
-                } else {
-                    checks.push(error(
-                        "Sync Associations",
-                        missing.join("; "),
-                        "Run `linker status`, then fix the missing directory or remove the association.",
-                    ));
-                }
+                Err(err) => checks.push(error(
+                    "Sync Associations",
+                    err.to_string(),
+                    "Check the Linker state database.",
+                )),
             }
-            Err(err) => checks.push(error(
+        }
+        Err(err) => {
+            checks.push(error(
+                "State Database",
+                err.to_string(),
+                "Check Linker Application Support permissions.",
+            ));
+            checks.push(error(
                 "Sync Associations",
                 err.to_string(),
                 "Check the Linker state database.",
-            )),
-        },
-        Err(err) => checks.push(error(
-            "Sync Associations",
-            err.to_string(),
-            "Check Linker Application Support permissions.",
-        )),
+            ));
+        }
     }
 
     match paths::app_global_ignore_path() {

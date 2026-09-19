@@ -541,3 +541,62 @@ fn the_global_ignore_file_itself_is_never_synchronized() {
         "keep"
     );
 }
+
+#[test]
+fn a_global_ignore_file_with_a_byte_order_mark_still_applies() {
+    let f = Fixture::new();
+    write(&f.local.join(".DS_Store"), "finder", 100);
+    write(&f.local.join("keep.txt"), "keep", 100);
+    fs::write(f.global_ignore(), "\u{feff}.DS_Store\n").unwrap();
+
+    f.sync();
+
+    assert!(!f.cloud.join(".DS_Store").exists());
+    assert!(f.local.join(".DS_Store").exists());
+    assert_eq!(
+        fs::read_to_string(f.cloud.join("keep.txt")).unwrap(),
+        "keep"
+    );
+}
+
+#[test]
+fn a_directory_at_the_global_ignore_path_fails_the_pass_closed() {
+    let f = Fixture::new();
+    write(&f.local.join("keep.txt"), "keep", 100);
+    fs::create_dir_all(f.global_ignore()).unwrap();
+    fs::write(f.global_ignore().join("nested"), "x").unwrap();
+
+    let error = sync_item(&f.db, &f.item).unwrap_err().to_string();
+
+    assert!(
+        error.contains("cannot read the global ignore file"),
+        "{error}"
+    );
+    assert!(!f.cloud.join("keep.txt").exists());
+}
+
+#[test]
+fn an_unreadable_global_ignore_file_fails_the_pass_closed() {
+    if std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .unwrap()
+        .stdout
+        == b"0\n"
+    {
+        return;
+    }
+    let f = Fixture::new();
+    write(&f.local.join("keep.txt"), "keep", 100);
+    write(&f.global_ignore(), ".DS_Store\n", 100);
+    fs::set_permissions(f.global_ignore(), fs::Permissions::from_mode(0o000)).unwrap();
+
+    let error = sync_item(&f.db, &f.item).unwrap_err().to_string();
+    fs::set_permissions(f.global_ignore(), fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(
+        error.contains("cannot read the global ignore file"),
+        "{error}"
+    );
+    assert!(!f.cloud.join("keep.txt").exists());
+}

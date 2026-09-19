@@ -38,6 +38,8 @@ pub struct Rules {
 impl Rules {
     pub fn add(&mut self, base: &Path, file: &Path, contents: &str) -> Vec<RuleWarning> {
         let mut warnings = Vec::new();
+        // A byte-order mark from an editor must not hide the first rule.
+        let contents = contents.strip_prefix('\u{feff}').unwrap_or(contents);
         for (index, line) in contents.lines().enumerate() {
             let pattern = line.trim();
             if pattern.is_empty() || pattern.starts_with('#') {
@@ -208,5 +210,93 @@ mod tests {
         assert!(!rules.ignored(Path::new("other/cache/a"), false));
         assert!(!rules.ignored(Path::new("sub/deep/cache/a"), false));
         assert!(rules.ignored(Path::new("sub/deep/.env"), false));
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::Rules;
+    use std::path::Path;
+
+    fn rules(lines: &[&str]) -> Rules {
+        let mut rules = Rules::default();
+        let text = lines.join("\n");
+        let warnings = rules.add(Path::new(""), Path::new("/rules"), &text);
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        rules
+    }
+
+    #[test]
+    fn name_rules_match_at_any_depth_and_stay_exact() {
+        let r = rules(&[".env"]);
+        assert!(r.ignored(Path::new(".env"), false));
+        assert!(r.ignored(Path::new("sub/.env"), false));
+        assert!(!r.ignored(Path::new("sub/.env.example"), false));
+        assert!(!r.ignored(Path::new("env"), false));
+    }
+
+    #[test]
+    fn directory_only_rules_require_a_directory_at_that_position() {
+        let r = rules(&["node_modules/"]);
+        assert!(r.ignored(Path::new("node_modules"), true));
+        assert!(!r.ignored(Path::new("node_modules"), false));
+        assert!(r.ignored(Path::new("a/node_modules"), true));
+        assert!(r.ignored(Path::new("a/node_modules/pkg/index.js"), false));
+    }
+
+    #[test]
+    fn anchored_rules_match_exactly_one_relative_position() {
+        let r = rules(&["/build", "src/cache/", "labs/*/.env", "a/b"]);
+        assert!(r.ignored(Path::new("build"), true));
+        assert!(!r.ignored(Path::new("src/build"), true));
+        assert!(r.ignored(Path::new("src/cache"), true));
+        assert!(r.ignored(Path::new("src/cache/file"), false));
+        assert!(!r.ignored(Path::new("other/src/cache"), true));
+        assert!(r.ignored(Path::new("labs/one/.env"), false));
+        assert!(!r.ignored(Path::new("labs/one/two/.env"), false));
+        assert!(r.ignored(Path::new("a/b"), false));
+        assert!(!r.ignored(Path::new("x/a/b"), false));
+    }
+
+    #[test]
+    fn single_star_matches_any_segment_without_crossing_separators() {
+        let r = rules(&["*.log", "temp*"]);
+        assert!(r.ignored(Path::new("a.log"), false));
+        assert!(r.ignored(Path::new("dir/a.log"), false));
+        assert!(!r.ignored(Path::new("dir/a.log.gz"), false));
+        assert!(r.ignored(Path::new("temporary/x"), false));
+        assert!(!r.ignored(Path::new(".DS_Store"), false));
+
+        let everything = rules(&["*"]);
+        assert!(everything.ignored(Path::new(".DS_Store"), false));
+        assert!(everything.ignored(Path::new("any/deep/path"), false));
+    }
+
+    #[test]
+    fn controls_are_exempt_unless_an_ancestor_is_ignored() {
+        let exempt = rules(&[".gitignore"]);
+        assert!(!exempt.ignored(Path::new(".gitignore"), false));
+        assert!(!exempt.ignored(Path::new("sub/.gitignore"), false));
+
+        let ignored_directory = rules(&["docs/"]);
+        assert!(ignored_directory.ignored(Path::new("docs/.gitignore"), false));
+        assert!(ignored_directory.ignored(Path::new("docs"), true));
+    }
+
+    #[test]
+    fn a_utf8_byte_order_mark_does_not_hide_the_first_rule() {
+        let mut r = Rules::default();
+        let warnings = r.add(Path::new(""), Path::new("/rules"), "\u{feff}.DS_Store\n");
+        assert!(warnings.is_empty());
+        assert!(r.ignored(Path::new(".DS_Store"), false));
+    }
+
+    #[test]
+    fn carriage_returns_and_blank_lines_do_not_create_rules() {
+        let mut r = Rules::default();
+        let warnings = r.add(Path::new(""), Path::new("/rules"), "  \n\t\ncached\r\n");
+        assert!(warnings.is_empty());
+        assert!(r.ignored(Path::new("cached"), true));
+        assert!(!r.ignored(Path::new(""), true));
     }
 }

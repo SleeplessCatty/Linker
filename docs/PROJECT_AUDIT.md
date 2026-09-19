@@ -24,7 +24,7 @@ Runtime state is stored outside the repository:
 - `TASKS.md`: development progress and remaining roadmap.
 - `crates/linker-cli/src/output.rs`: Unicode-width tables, safe cell escaping and readable UTC timestamps.
 - `crates/linker-core/src/rules.rs`: basic `.gitignore` path-segment matcher and warning diagnostics.
-- `crates/linker-core/src/sync.rs`: control-first planning, global rule loading, baseline retirement, counted target cleanup, target-root recovery, and read-only audit/manual repair planning.
+- `crates/linker-core/src/sync.rs`: control-first planning, global rule loading, baseline retirement, counted target cleanup, target-root recovery, steady-state scan cost control, and read-only audit/manual repair planning.
 - `crates/linker-cli/tests/recovery.rs`: target-root loss, per-file deletion propagation and recovery-boundary integration tests.
 - `crates/linker-core/src/tree.rs`: descriptor-relative no-follow reads/copies/deletes.
 - `crates/linker-core/src/migration.rs`: backed-up, restartable metadata migrations to database schema 3; manifests remain schema 2.
@@ -91,7 +91,9 @@ The requested CLI additions have implementation and test coverage. The previousl
 
 ## Verification Status
 
-Local verification on 2026-09-19: 126 Rust tests passed (3 output-unit, 20 CLI integration, 29 add-safety integration, 9 target-root recovery integration, 16 audit/repair integration, 11 core-unit, 21 sync integration, 9 migration, 1 daemon-unit, 7 daemon integration). Format, strict Clippy, compile/release build, Shell regressions and packaging syntax checks passed. This is local evidence; it does not claim that a remote CI run or GitHub release occurred. Add tests use isolated temporary state and directories; live associations are not modified. Permission checks require a non-root test user.
+Local verification on 2026-09-19: 138 Rust tests passed (3 output-unit, 20 CLI integration, 29 add-safety integration, 9 target-root recovery integration, 16 audit/repair integration, 20 core-unit, 24 sync integration, 9 migration, 1 daemon-unit, 7 daemon integration). Format, strict Clippy, compile/release build, Shell regressions and packaging syntax checks passed. This is local evidence; it does not claim that a remote CI run or GitHub release occurred. Add tests use isolated temporary state and directories; live associations are not modified. Permission checks require a non-root test user.
+
+Additional end-to-end evidence gathered on a synthetic 3013-file tree (see [SPEC.md](SPEC.md#scan-cost)): initial sync, a 400-modification/100-deletion bidirectional pass, two concurrent `sync` processes on the same association, and `repair` on a converged tree all left both directories byte-identical under an independent SHA-256 comparison of every file.
 
 ```bash
 cargo fmt --all --check

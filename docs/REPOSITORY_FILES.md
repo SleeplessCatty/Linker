@@ -9,6 +9,7 @@ Commit source, docs, packaging, and reproducibility files:
 - `crates/**/Cargo.toml`
 - `crates/**/src/**/*.rs`
 - `crates/**/tests/**/*.rs`
+- `crates/**/examples/**/*.rs`
 - `README.md`
 - `USAGE.md`
 - `INSTALL.md`
@@ -40,6 +41,7 @@ Do not commit generated or machine-local files:
 
 ```bash
 cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 cargo check --workspace --all-targets
 bash -n scripts/install.sh scripts/uninstall.sh scripts/install-remote.sh scripts/lib/cleanup-legacy.sh scripts/tests/legacy-cleanup.sh scripts/tests/install-safety.sh scripts/tests/uninstall-safety.sh scripts/tests/remote-ref.sh scripts/tests/branding-residue.sh

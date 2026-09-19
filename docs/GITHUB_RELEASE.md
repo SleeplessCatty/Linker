@@ -1,5 +1,7 @@
 # GitHub Release and Install Setup
 
+Version 0.3.0 is a local/code upgrade in this change; no GitHub Release is published. The following is a future publishing checklist, not a release-status claim.
+
 ## Initialize and Push
 
 ```bash
@@ -31,10 +33,10 @@ Forward install options with `bash -s --`:
 curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/install-remote.sh | bash -s -- --no-link
 ```
 
-Install a specific tag:
+Install a published branch/tag/commit (verify it exists first):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/install-remote.sh | LINKER_REF=v0.2.0 bash
+curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/install-remote.sh | LINKER_REF=main bash
 ```
 
 ## Homebrew Tap
@@ -51,7 +53,7 @@ Copy:
 packaging/homebrew/linker.rb -> Formula/linker.rb
 ```
 
-The checked-in formula is intentionally `HEAD`-only until the `v0.2.0` release exists. Users can install it before that release with:
+The checked-in formula is intentionally `HEAD`-only until a stable release exists. Users can install it before that release with:
 
 ```bash
 brew install --HEAD linker
@@ -62,7 +64,7 @@ The formula is for fresh installs. It does not perform the incompatible pre-0.2 
 For a stable formula, publish a GitHub release tag and add `url` plus `sha256`:
 
 ```bash
-curl -L https://github.com/SleeplessCatty/Linker/archive/refs/tags/v0.2.0.tar.gz | shasum -a 256
+curl -L "https://github.com/SleeplessCatty/Linker/archive/refs/tags/<published-tag>.tar.gz" | shasum -a 256
 ```
 
 Then users can install:

@@ -6,7 +6,6 @@ use uuid::Uuid;
 use crate::health::{self, DaemonHealth, DoctorReport};
 use crate::manifest::{write_manifest, Manifest};
 use crate::paths;
-use crate::rules::{initial_rules, normalize_rule_pattern, write_rule_snapshot, Rule};
 use crate::state::{Item, NewItem, StateDb};
 use crate::sync::SyncSummary;
 use crate::Result;
@@ -15,8 +14,6 @@ use crate::Result;
 pub struct AddOptions {
     pub source_path: String,
     pub target_parent_path: String,
-    pub ignore_file: Option<String>,
-    pub excludes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,25 +39,12 @@ pub fn add_item(options: AddOptions) -> Result<AddOutcome> {
     let id = Uuid::new_v4().to_string();
     let cloud_path = paths::target_item_path(&target_parent, &name)?;
     validate_association_paths(&local_path, &cloud_path)?;
-    if cloud_path.exists() {
-        if !cloud_path.is_dir() {
-            return Err(crate::LinkerError::NotDirectory(cloud_path));
-        }
+    if cloud_path.exists() && !cloud_path.is_dir() {
+        return Err(crate::LinkerError::NotDirectory(cloud_path));
     }
     let manifest_path = paths::app_manifests_dir()?.join(format!("{name}.json"));
-    let rule_path = paths::app_rules_dir()?.join(format!("{name}.ignore"));
 
     fs::create_dir_all(&cloud_path)?;
-
-    let ignore_file = options
-        .ignore_file
-        .as_deref()
-        .map(paths::expand_tilde)
-        .transpose()?
-        .map(|path| path.canonicalize())
-        .transpose()?;
-    let rules = initial_rules(ignore_file.as_deref(), &options.excludes)?;
-    write_rule_snapshot(&rule_path, &rules)?;
 
     let manifest = Manifest::new(
         id.clone(),
@@ -68,13 +52,11 @@ pub fn add_item(options: AddOptions) -> Result<AddOutcome> {
         "directory".to_string(),
         local_path.to_string_lossy().to_string(),
         cloud_path.to_string_lossy().to_string(),
-        rule_path.to_string_lossy().to_string(),
     );
     write_manifest(&manifest_path, &manifest)?;
 
     let local_path_string = local_path.to_string_lossy().to_string();
     let cloud_path_string = cloud_path.to_string_lossy().to_string();
-    let rule_path_string = rule_path.to_string_lossy().to_string();
 
     db.insert_item(NewItem {
         id: &id,
@@ -82,12 +64,10 @@ pub fn add_item(options: AddOptions) -> Result<AddOutcome> {
         item_type: "directory",
         local_path: &local_path_string,
         cloud_path: &cloud_path_string,
-        rule_path: &rule_path_string,
-        rules: &rules,
     })?;
 
     let item = db.get_item(&name)?;
-    let sync_summary = crate::sync::sync_item(&db, &item, &rules)?;
+    let sync_summary = crate::sync::sync_item(&db, &item)?;
     Ok(AddOutcome {
         item,
         manifest_path: manifest_path.to_string_lossy().to_string(),
@@ -110,42 +90,21 @@ pub fn doctor() -> DoctorReport {
 
 pub fn remove_item(name: &str) -> Result<Item> {
     let db = StateDb::open(&paths::state_db_path()?)?;
+    let found = db.get_item(name)?;
+    let _lock = db.lock_item(&found.id)?;
     let item = db.remove_item(name)?;
     remove_file_if_exists(&paths::app_manifests_dir()?.join(format!("{}.json", item.name)))?;
-    remove_file_if_exists(Path::new(&item.rule_path))?;
     Ok(item)
 }
 
 pub fn delete_item(name: &str) -> Result<Item> {
     let db = StateDb::open(&paths::state_db_path()?)?;
+    let found = db.get_item(name)?;
+    let _lock = db.lock_item(&found.id)?;
     let item = db.get_item(name)?;
     remove_path_if_exists(Path::new(&item.cloud_path))?;
     remove_file_if_exists(&paths::app_manifests_dir()?.join(format!("{}.json", item.name)))?;
-    remove_file_if_exists(Path::new(&item.rule_path))?;
     db.remove_item(name)
-}
-
-pub fn add_exclude(name: &str, pattern: &str) -> Result<Vec<Rule>> {
-    let pattern = normalize_rule_pattern(pattern)?;
-    let db = StateDb::open(&paths::state_db_path()?)?;
-    let item = db.add_user_exclude(name, &pattern)?;
-    let rules = rewrite_rule_snapshot(&db, &item)?;
-    crate::sync::prune_cloud_excluded(&item, &rules)?;
-    crate::sync::sync_item(&db, &item, &rules)?;
-    Ok(rules)
-}
-
-pub fn remove_exclude(name: &str, pattern: &str) -> Result<Vec<Rule>> {
-    let pattern = normalize_rule_pattern(pattern)?;
-    let db = StateDb::open(&paths::state_db_path()?)?;
-    let item = db.remove_user_exclude(name, &pattern)?;
-    rewrite_rule_snapshot(&db, &item)
-}
-
-pub fn list_excludes(name: &str) -> Result<Vec<Rule>> {
-    let db = StateDb::open(&paths::state_db_path()?)?;
-    let item = db.get_item(name)?;
-    rules_for_item(&db, &item)
 }
 
 pub fn sync_item(name: Option<&str>) -> Result<Vec<SyncSummary>> {
@@ -158,26 +117,32 @@ pub fn sync_item(name: Option<&str>) -> Result<Vec<SyncSummary>> {
 
     let mut summaries = Vec::new();
     for item in items {
-        let rules = rules_for_item(&db, &item)?;
-        summaries.push(crate::sync::sync_item(&db, &item, &rules)?);
+        summaries.push(crate::sync::sync_item(&db, &item)?);
     }
     Ok(summaries)
 }
 
-fn rewrite_rule_snapshot(db: &StateDb, item: &Item) -> Result<Vec<Rule>> {
-    let rules = rules_for_item(db, item)?;
-    write_rule_snapshot(std::path::Path::new(&item.rule_path), &rules)?;
-    Ok(rules)
-}
-
-fn rules_for_item(db: &StateDb, item: &Item) -> Result<Vec<Rule>> {
-    Ok(db
-        .list_excludes_for_item(&item.id)?
-        .into_iter()
-        .map(|rule| Rule {
-            pattern: rule.pattern,
-        })
-        .collect())
+pub fn preview_sync(name: Option<&str>) -> Result<Vec<crate::sync::SyncPreview>> {
+    let path = paths::state_db_path()?;
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return match name {
+                Some(name) => Err(crate::LinkerError::ItemNotFound(name.into())),
+                None => Ok(Vec::new()),
+            };
+        }
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    let db = StateDb::open_read_only(&path)?;
+    let items = match name {
+        Some(name) => vec![db.get_item(name)?],
+        None => db.list_items()?,
+    };
+    items
+        .iter()
+        .map(|item| crate::sync::preview_item(&db, item))
+        .collect()
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<()> {

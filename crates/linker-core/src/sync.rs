@@ -1,16 +1,14 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use filetime::{set_file_mtime, FileTime};
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use sha2::{Digest, Sha256};
-use walkdir::{DirEntry, WalkDir};
 
-use crate::rules::Rule;
+use crate::rules::{RuleWarning, Rules};
 use crate::state::{FileStateUpdate, Item, StateDb, StoredFileState};
+use crate::tree::{Kind, Tree};
 use crate::{LinkerError, Result};
 
 #[derive(Debug, Clone)]
@@ -20,172 +18,20 @@ pub struct SyncSummary {
     pub copied_cloud_to_local: usize,
     pub deleted_local: usize,
     pub deleted_cloud: usize,
+    pub pruned_cloud_directories: usize,
     pub unchanged: usize,
+    pub warnings: Vec<RuleWarning>,
+    pub rules_fingerprint: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct FileMeta {
-    abs_path: PathBuf,
-    rel_path: String,
     hash: String,
     size: i64,
     mtime: i64,
 }
 
-pub fn sync_item(db: &StateDb, item: &Item, rules: &[Rule]) -> Result<SyncSummary> {
-    let local_root = PathBuf::from(&item.local_path);
-    let cloud_root = PathBuf::from(&item.cloud_path);
-    let is_file = item.item_type == "file";
-
-    if !local_root.exists() {
-        db.mark_item_error(&item.id, "local root is missing")?;
-        return Err(LinkerError::PathMissing(local_root));
-    }
-    if !cloud_root.exists() {
-        if is_file {
-            if let Some(parent) = cloud_root.parent() {
-                fs::create_dir_all(parent)?;
-            }
-        } else {
-            fs::create_dir_all(&cloud_root)?;
-        }
-    }
-
-    let local_matcher_root = matcher_root(&local_root, is_file);
-    let cloud_matcher_root = matcher_root(&cloud_root, is_file);
-    let local_matcher = build_matcher(&local_matcher_root, rules)?;
-    let cloud_matcher = build_matcher(&cloud_matcher_root, rules)?;
-    let local_files = scan_item_side(&local_root, is_file, &local_matcher, &local_matcher_root)?;
-    let cloud_files = scan_item_side(&cloud_root, is_file, &cloud_matcher, &cloud_matcher_root)?;
-    let previous = db
-        .list_file_states(&item.id)?
-        .into_iter()
-        .map(|state| (state.relative_path.clone(), state))
-        .collect::<HashMap<_, _>>();
-
-    let mut paths = BTreeSet::new();
-    paths.extend(local_files.keys().cloned());
-    paths.extend(cloud_files.keys().cloned());
-    paths.extend(previous.keys().cloned());
-
-    let mut summary = SyncSummary {
-        item_name: item.name.clone(),
-        copied_local_to_cloud: 0,
-        copied_cloud_to_local: 0,
-        deleted_local: 0,
-        deleted_cloud: 0,
-        unchanged: 0,
-    };
-
-    for rel_path in paths {
-        let local = local_files.get(&rel_path);
-        let cloud = cloud_files.get(&rel_path);
-        let prev = previous.get(&rel_path);
-
-        match decide(local, cloud, prev) {
-            Decision::Noop => {
-                summary.unchanged += 1;
-                write_state(db, &item.id, &rel_path, local, cloud, false)?;
-            }
-            Decision::CopyLocalToCloud => {
-                let local = local.expect("local file exists for local-to-cloud copy");
-                let target = target_path(&cloud_root, &rel_path);
-                copy_file(local, &target)?;
-                let copied = scan_after_copy(&target, &cloud_root, is_file)?;
-                summary.copied_local_to_cloud += 1;
-                write_state(db, &item.id, &rel_path, Some(local), Some(&copied), false)?;
-            }
-            Decision::CopyCloudToLocal => {
-                let cloud = cloud.expect("cloud file exists for cloud-to-local copy");
-                let target = target_path(&local_root, &rel_path);
-                copy_file(cloud, &target)?;
-                let copied = scan_after_copy(&target, &local_root, is_file)?;
-                summary.copied_cloud_to_local += 1;
-                write_state(db, &item.id, &rel_path, Some(&copied), Some(cloud), false)?;
-            }
-            Decision::DeleteLocal => {
-                if let Some(local) = local {
-                    remove_file_if_exists(&local.abs_path)?;
-                    summary.deleted_local += 1;
-                }
-                write_state(db, &item.id, &rel_path, None, cloud, cloud.is_none())?;
-            }
-            Decision::DeleteCloud => {
-                if let Some(cloud) = cloud {
-                    remove_file_if_exists(&cloud.abs_path)?;
-                    summary.deleted_cloud += 1;
-                }
-                write_state(db, &item.id, &rel_path, local, None, local.is_none())?;
-            }
-            Decision::Deleted => {
-                write_state(db, &item.id, &rel_path, None, None, true)?;
-            }
-        }
-    }
-
-    db.mark_item_synced(&item.id)?;
-    Ok(summary)
-}
-
-pub fn prune_cloud_excluded(item: &Item, rules: &[Rule]) -> Result<usize> {
-    let cloud_root = PathBuf::from(&item.cloud_path);
-    if !cloud_root.exists() {
-        return Ok(0);
-    }
-
-    let is_file = item.item_type == "file";
-    let matcher_root = matcher_root(&cloud_root, is_file);
-    let matcher = build_matcher(&matcher_root, rules)?;
-
-    if is_file {
-        let Some(file_name) = cloud_root.file_name() else {
-            return Ok(0);
-        };
-        let ignored = matcher
-            .matched_path_or_any_parents(Path::new(file_name), false)
-            .is_ignore();
-        if ignored {
-            remove_file_if_exists(&cloud_root)?;
-            return Ok(1);
-        }
-        return Ok(0);
-    }
-
-    let mut targets = Vec::new();
-    for entry in WalkDir::new(&cloud_root)
-        .follow_links(false)
-        .contents_first(true)
-        .into_iter()
-    {
-        let entry = entry?;
-        if entry.depth() == 0 {
-            continue;
-        }
-        let Ok(rel) = entry.path().strip_prefix(&cloud_root) else {
-            continue;
-        };
-        if matcher
-            .matched_path_or_any_parents(rel, entry.file_type().is_dir())
-            .is_ignore()
-        {
-            targets.push((entry.path().to_path_buf(), entry.file_type().is_dir()));
-        }
-    }
-
-    let mut removed = 0;
-    for (path, is_dir) in targets {
-        if is_dir {
-            if fs::remove_dir_all(&path).is_ok() {
-                removed += 1;
-            }
-        } else if remove_file_if_exists(&path).is_ok() {
-            removed += 1;
-        }
-    }
-    Ok(removed)
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Decision {
     Noop,
     CopyLocalToCloud,
@@ -203,419 +49,516 @@ fn decide(
     match (local, cloud) {
         (Some(local), Some(cloud)) => {
             if local.hash == cloud.hash {
-                return Decision::Noop;
-            }
-            if local.mtime >= cloud.mtime {
+                Decision::Noop
+            } else if local.mtime >= cloud.mtime {
                 Decision::CopyLocalToCloud
             } else {
                 Decision::CopyCloudToLocal
             }
         }
         (Some(local), None) => {
-            if let Some(prev) = prev {
-                if prev.cloud_hash.is_some()
-                    && prev.local_hash.as_deref() == Some(local.hash.as_str())
-                    && prev.local_mtime == Some(local.mtime)
-                {
-                    return Decision::DeleteLocal;
-                }
+            if prev.is_some_and(|p| {
+                p.cloud_hash.is_some()
+                    && p.local_hash.as_deref() == Some(&local.hash)
+                    && p.local_mtime == Some(local.mtime)
+            }) {
+                Decision::DeleteLocal
+            } else {
+                Decision::CopyLocalToCloud
             }
-            Decision::CopyLocalToCloud
         }
         (None, Some(cloud)) => {
-            if let Some(prev) = prev {
-                if prev.local_hash.is_some()
-                    && prev.cloud_hash.as_deref() == Some(cloud.hash.as_str())
-                    && prev.cloud_mtime == Some(cloud.mtime)
-                {
-                    return Decision::DeleteCloud;
-                }
+            if prev.is_some_and(|p| {
+                p.local_hash.is_some()
+                    && p.cloud_hash.as_deref() == Some(&cloud.hash)
+                    && p.cloud_mtime == Some(cloud.mtime)
+            }) {
+                Decision::DeleteCloud
+            } else {
+                Decision::CopyCloudToLocal
             }
-            Decision::CopyCloudToLocal
         }
         (None, None) => Decision::Deleted,
     }
 }
 
-fn build_matcher(root: &Path, rules: &[Rule]) -> Result<Gitignore> {
-    let mut builder = GitignoreBuilder::new(root);
-    for rule in rules {
-        builder
-            .add_line(None, &rule.pattern)
-            .map_err(|err| LinkerError::Rule(err.to_string()))?;
+struct Roots {
+    local: Tree,
+    cloud: Tree,
+    local_file: Option<PathBuf>,
+    cloud_file: Option<PathBuf>,
+}
+impl Roots {
+    fn open(item: &Item) -> Result<Self> {
+        let local = Path::new(&item.local_path);
+        let cloud = Path::new(&item.cloud_path);
+        let single = item.item_type == "file";
+        Ok(Self {
+            local: Tree::open(if single {
+                local.parent().unwrap()
+            } else {
+                local
+            })?,
+            cloud: Tree::open(if single {
+                cloud.parent().unwrap()
+            } else {
+                cloud
+            })?,
+            local_file: if single {
+                local.file_name().map(PathBuf::from)
+            } else {
+                None
+            },
+            cloud_file: if single {
+                cloud.file_name().map(PathBuf::from)
+            } else {
+                None
+            },
+        })
     }
-    builder
-        .build()
-        .map_err(|err| LinkerError::Rule(err.to_string()))
+    fn local_rel<'a>(&'a self, key: &'a Path) -> &'a Path {
+        self.local_file.as_deref().unwrap_or(key)
+    }
+    fn cloud_rel<'a>(&'a self, key: &'a Path) -> &'a Path {
+        self.cloud_file.as_deref().unwrap_or(key)
+    }
 }
 
-fn matcher_root(path: &Path, is_file: bool) -> PathBuf {
-    if is_file {
-        path.parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."))
-    } else {
-        path.to_path_buf()
-    }
+struct Operation {
+    relative: PathBuf,
+    local: Option<FileMeta>,
+    cloud: Option<FileMeta>,
+    decision: Decision,
 }
 
-fn scan_item_side(
-    root: &Path,
-    is_file: bool,
-    matcher: &Gitignore,
-    matcher_root: &Path,
-) -> Result<HashMap<String, FileMeta>> {
-    if is_file {
-        return scan_file_item(root, matcher, matcher_root);
-    }
-    scan_tree(root, matcher)
+#[derive(Default)]
+struct Plan {
+    rules: Rules,
+    controls: Vec<Operation>,
+    files: Vec<Operation>,
+    prune: Vec<(PathBuf, bool)>,
+    forget: BTreeSet<String>,
+    warnings: Vec<RuleWarning>,
+    documents: Vec<(PathBuf, String)>,
+    observed: BTreeSet<String>,
 }
 
-fn scan_file_item(
-    path: &Path,
-    matcher: &Gitignore,
-    matcher_root: &Path,
-) -> Result<HashMap<String, FileMeta>> {
-    let mut files = HashMap::new();
-    if !path.exists() {
-        return Ok(files);
-    }
-    if !path.is_file() {
-        return Err(LinkerError::NotFile(path.to_path_buf()));
-    }
-
-    let rel_for_match = path
-        .strip_prefix(matcher_root)
-        .map_err(|err| LinkerError::StripPrefix(err.to_string()))?;
-    if matcher
-        .matched_path_or_any_parents(rel_for_match, false)
-        .is_ignore()
-    {
-        return Ok(files);
-    }
-
-    let mut meta = scan_one(path, path)?;
-    meta.rel_path = String::new();
-    files.insert(String::new(), meta);
-    Ok(files)
+fn key(path: &Path) -> Result<String> {
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| std::io::Error::other("non-UTF-8 sync path").into())
 }
 
-fn scan_tree(root: &Path, matcher: &Gitignore) -> Result<HashMap<String, FileMeta>> {
-    let mut files = HashMap::new();
-    for entry in WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| should_walk(root, matcher, entry))
-    {
-        let entry = entry?;
-        if !entry.file_type().is_file() {
-            continue;
+fn read_meta(tree: &Tree, relative: &Path) -> Result<Option<FileMeta>> {
+    match tree.kind(relative)? {
+        None => Ok(None),
+        Some(Kind::File) => {
+            let mut file = tree.file(relative)?;
+            let before = file.metadata()?;
+            let mut hasher = Sha256::new();
+            let mut buffer = [0; 64 * 1024];
+            loop {
+                let n = file.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..n]);
+            }
+            let after = file.metadata()?;
+            if before.len() != after.len() || before.modified()? != after.modified()? {
+                return Err(std::io::Error::other(format!(
+                    "file changed during scan: {}",
+                    tree.path.join(relative).display()
+                ))
+                .into());
+            }
+            Ok(Some(FileMeta {
+                hash: format!("{:x}", hasher.finalize()),
+                size: after.len() as i64,
+                mtime: after
+                    .modified()?
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| LinkerError::Timestamp(e.to_string()))?
+                    .as_secs() as i64,
+            }))
         }
-
-        let meta = scan_one(entry.path(), root)?;
-        files.insert(meta.rel_path.clone(), meta);
-    }
-    Ok(files)
-}
-
-fn target_path(root: &Path, rel_path: &str) -> PathBuf {
-    if rel_path.is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(rel_path)
+        _ => Err(std::io::Error::other(format!(
+            "expected regular file: {}",
+            tree.path.join(relative).display()
+        ))
+        .into()),
     }
 }
 
-fn scan_after_copy(path: &Path, root: &Path, is_file: bool) -> Result<FileMeta> {
-    if is_file {
-        let mut meta = scan_one(path, path)?;
-        meta.rel_path = String::new();
-        Ok(meta)
-    } else {
-        scan_one(path, root)
-    }
-}
-
-fn should_walk(root: &Path, matcher: &Gitignore, entry: &DirEntry) -> bool {
-    if entry.depth() == 0 {
-        return true;
-    }
-    let Ok(rel) = entry.path().strip_prefix(root) else {
-        return false;
-    };
-    !matcher
-        .matched_path_or_any_parents(rel, entry.file_type().is_dir())
-        .is_ignore()
-}
-
-fn scan_one(path: &Path, root: &Path) -> Result<FileMeta> {
-    let metadata = fs::metadata(path)?;
-    let rel_path = path
-        .strip_prefix(root)
-        .map_err(|err| LinkerError::StripPrefix(err.to_string()))?
-        .to_string_lossy()
-        .replace('\\', "/");
-    let mtime = metadata
-        .modified()?
-        .duration_since(UNIX_EPOCH)
-        .map_err(|err| LinkerError::Timestamp(err.to_string()))?
-        .as_secs() as i64;
-    let size = metadata.len() as i64;
-    let hash = hash_file(path)?;
-
-    Ok(FileMeta {
-        abs_path: path.to_path_buf(),
-        rel_path,
-        hash,
-        size,
-        mtime,
+fn operation(
+    roots: &Roots,
+    relative: &Path,
+    previous: &BTreeMap<String, StoredFileState>,
+) -> Result<Operation> {
+    let local = read_meta(&roots.local, roots.local_rel(relative))?;
+    let cloud = read_meta(&roots.cloud, roots.cloud_rel(relative))?;
+    let decision = decide(
+        local.as_ref(),
+        cloud.as_ref(),
+        previous.get(&key(relative)?),
+    );
+    Ok(Operation {
+        relative: relative.to_path_buf(),
+        local,
+        cloud,
+        decision,
     })
 }
 
-fn hash_file(path: &Path) -> Result<String> {
-    let mut file = fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
+impl Plan {
+    fn build(roots: &Roots, previous: &BTreeMap<String, StoredFileState>) -> Result<Self> {
+        let mut plan = Self::default();
+        if roots.local_file.is_some() {
+            plan.files.push(operation(roots, Path::new(""), previous)?);
+            return Ok(plan);
         }
-        hasher.update(&buffer[..read]);
+        plan.visit(roots, Path::new(""), previous)?;
+        for relative in previous.keys() {
+            if plan.forget.contains(relative) {
+                continue;
+            }
+            if plan.rules.ignored(Path::new(relative), false) {
+                plan.forget.insert(relative.clone());
+            } else if !plan.observed.contains(relative) {
+                // Do not infer deletion through a symlink or an unexpected file type.
+                let rel = Path::new(relative);
+                plan.files.push(operation(roots, rel, previous)?);
+            }
+        }
+        Ok(plan)
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    fn visit(
+        &mut self,
+        roots: &Roots,
+        directory: &Path,
+        previous: &BTreeMap<String, StoredFileState>,
+    ) -> Result<()> {
+        let control = directory.join(".gitignore");
+        let op = operation(roots, &control, previous).map_err(|error| {
+            std::io::Error::other(format!(
+                "cannot resolve control {}: {error}",
+                control.display()
+            ))
+        })?;
+        self.observed.insert(key(&control)?);
+        let chosen = match op.decision {
+            Decision::Noop | Decision::CopyLocalToCloud => {
+                op.local.as_ref().map(|m| (&roots.local, m))
+            }
+            Decision::CopyCloudToLocal => op.cloud.as_ref().map(|m| (&roots.cloud, m)),
+            _ => None,
+        };
+        if let Some((tree, meta)) = chosen {
+            let mut contents = String::new();
+            tree.file(&control)?.read_to_string(&mut contents)?;
+            if format!("{:x}", Sha256::digest(contents.as_bytes())) != meta.hash {
+                return Err(
+                    std::io::Error::other("gitignore changed during scan; retry sync").into(),
+                );
+            }
+            self.warnings.extend(
+                self.rules
+                    .add(directory, &tree.path.join(&control), &contents),
+            );
+            self.documents.push((control.clone(), meta.hash.clone()));
+        }
+        // Even missing controls are retained as snapshots to catch newly created rules.
+        self.controls.push(op);
+
+        let names: BTreeSet<_> = roots
+            .local
+            .entries(directory)?
+            .into_iter()
+            .chain(roots.cloud.entries(directory)?)
+            .collect();
+        for name in names {
+            if name == ".gitignore" {
+                continue;
+            }
+            let rel = directory.join(name);
+            let local = roots.local.kind(&rel)?;
+            let cloud = roots.cloud.kind(&rel)?;
+            let is_dir = local == Some(Kind::Directory) || cloud == Some(Kind::Directory);
+            if self.rules.ignored(&rel, is_dir) {
+                if cloud.is_some() {
+                    self.collect_prune(&roots.cloud, &rel)?;
+                }
+                self.forget.insert(key(&rel)?);
+            } else if local.is_some() && cloud.is_some() && local != cloud {
+                return Err(std::io::Error::other(format!(
+                    "source/target type conflict: {}",
+                    rel.display()
+                ))
+                .into());
+            } else if is_dir {
+                self.visit(roots, &rel, previous)?;
+            } else if local == Some(Kind::File) || cloud == Some(Kind::File) {
+                self.observed.insert(key(&rel)?);
+                self.files.push(operation(roots, &rel, previous)?);
+            } else {
+                // Unsupported filesystem entries are never followed or synchronized.
+                self.observed.insert(key(&rel)?);
+                self.forget.insert(key(&rel)?);
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_prune(&mut self, tree: &Tree, relative: &Path) -> Result<()> {
+        let kind = tree.kind(relative)?;
+        if kind == Some(Kind::Directory) {
+            for name in tree.entries(relative)? {
+                self.collect_prune(tree, &relative.join(name))?;
+            }
+        }
+        if let Some(kind) = kind {
+            self.prune
+                .push((relative.to_path_buf(), kind == Kind::Directory));
+        }
+        Ok(())
+    }
+
+    fn fingerprint(&self) -> String {
+        let mut hash = Sha256::new();
+        for (rel, content_hash) in &self.documents {
+            hash.update(rel.as_os_str().as_encoded_bytes());
+            hash.update([0]);
+            hash.update(content_hash);
+        }
+        format!("{:x}", hash.finalize())
+    }
+
+    fn verify_controls(&self, roots: &Roots) -> Result<()> {
+        if !roots.local.is_current()? || !roots.cloud.is_current()? {
+            return Err(std::io::Error::other("association root changed during scan").into());
+        }
+        for op in &self.controls {
+            verify_operation(roots, op)?;
+        }
+        Ok(())
+    }
 }
 
-fn copy_file(source: &FileMeta, target: &Path) -> Result<()> {
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)?;
+fn verify_operation(roots: &Roots, op: &Operation) -> Result<()> {
+    if read_meta(&roots.local, roots.local_rel(&op.relative))? != op.local
+        || read_meta(&roots.cloud, roots.cloud_rel(&op.relative))? != op.cloud
+    {
+        return Err(std::io::Error::other(format!(
+            "file changed during sync; retry: {}",
+            op.relative.display()
+        ))
+        .into());
     }
-
-    let tmp = target.with_extension(format!(
-        "{}linker-tmp-{}",
-        target
-            .extension()
-            .map(|ext| format!("{}.", ext.to_string_lossy()))
-            .unwrap_or_default(),
-        uuid::Uuid::new_v4()
-    ));
-
-    fs::copy(&source.abs_path, &tmp)?;
-    set_file_mtime(&tmp, FileTime::from_unix_time(source.mtime, 0))?;
-    fs::rename(&tmp, target)?;
     Ok(())
 }
 
-fn remove_file_if_exists(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err.into()),
-    }
-}
-
-fn write_state(
+fn apply(
     db: &StateDb,
-    item_id: &str,
-    rel_path: &str,
-    local: Option<&FileMeta>,
-    cloud: Option<&FileMeta>,
-    deleted: bool,
+    item: &Item,
+    roots: &Roots,
+    op: &Operation,
+    summary: &mut SyncSummary,
 ) -> Result<()> {
+    let relative = key(&op.relative)?;
+    let mut local = op.local.clone();
+    let mut cloud = op.cloud.clone();
+    if op.decision != Decision::Deleted {
+        verify_operation(roots, op)?;
+    }
+    match op.decision {
+        Decision::Noop => summary.unchanged += 1,
+        Decision::CopyLocalToCloud => {
+            roots.cloud.copy_from(
+                roots.cloud_rel(&op.relative),
+                &roots.local,
+                roots.local_rel(&op.relative),
+                local.as_ref().unwrap().mtime,
+            )?;
+            cloud = read_meta(&roots.cloud, roots.cloud_rel(&op.relative))?;
+            summary.copied_local_to_cloud += 1;
+        }
+        Decision::CopyCloudToLocal => {
+            roots.local.copy_from(
+                roots.local_rel(&op.relative),
+                &roots.cloud,
+                roots.cloud_rel(&op.relative),
+                cloud.as_ref().unwrap().mtime,
+            )?;
+            local = read_meta(&roots.local, roots.local_rel(&op.relative))?;
+            summary.copied_cloud_to_local += 1;
+        }
+        Decision::DeleteLocal => {
+            if roots.local.remove(roots.local_rel(&op.relative), false)? {
+                summary.deleted_local += 1;
+            }
+            local = None;
+        }
+        Decision::DeleteCloud => {
+            if roots.cloud.remove(roots.cloud_rel(&op.relative), false)? {
+                summary.deleted_cloud += 1;
+            }
+            cloud = None;
+        }
+        Decision::Deleted => {
+            // Absent controls with no history must not grow the database every pass.
+            db.forget_file_state(&item.id, &relative)?;
+            return Ok(());
+        }
+    }
     db.upsert_file_state(
-        item_id,
+        &item.id,
         &FileStateUpdate {
-            relative_path: rel_path.to_string(),
-            local_hash: local.map(|meta| meta.hash.clone()),
-            local_mtime: local.map(|meta| meta.mtime),
-            local_size: local.map(|meta| meta.size),
-            cloud_hash: cloud.map(|meta| meta.hash.clone()),
-            cloud_mtime: cloud.map(|meta| meta.mtime),
-            cloud_size: cloud.map(|meta| meta.size),
-            last_synced_hash: local
-                .map(|meta| meta.hash.clone())
-                .or_else(|| cloud.map(|meta| meta.hash.clone())),
-            deleted,
+            relative_path: relative,
+            local_hash: local.as_ref().map(|m| m.hash.clone()),
+            local_mtime: local.as_ref().map(|m| m.mtime),
+            local_size: local.as_ref().map(|m| m.size),
+            cloud_hash: cloud.as_ref().map(|m| m.hash.clone()),
+            cloud_mtime: cloud.as_ref().map(|m| m.mtime),
+            cloud_size: cloud.as_ref().map(|m| m.size),
+            last_synced_hash: local.as_ref().or(cloud.as_ref()).map(|m| m.hash.clone()),
+            deleted: local.is_none() && cloud.is_none(),
         },
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use std::fs;
-    use std::path::Path;
-
-    use filetime::{set_file_mtime, FileTime};
-    use tempfile::TempDir;
-    use uuid::Uuid;
-
-    use super::sync_item;
-    use crate::rules::Rule;
-    use crate::state::{NewItem, StateDb};
-
-    struct Fixture {
-        _tmp: TempDir,
-        local: std::path::PathBuf,
-        cloud: std::path::PathBuf,
-        db: StateDb,
-        item: crate::state::Item,
-        rules: Vec<Rule>,
+pub fn sync_item(db: &StateDb, item: &Item) -> Result<SyncSummary> {
+    let _lock = db.lock_item(&item.id)?;
+    let item = db.get_item(&item.id)?;
+    let result = run_sync(db, &item);
+    if let Err(error) = &result {
+        db.mark_item_error(&item.id, &error.to_string())?;
     }
+    result
+}
 
-    impl Fixture {
-        fn new(rules: Vec<Rule>) -> Self {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let local = tmp.path().join("local");
-            let cloud = tmp.path().join("cloud");
-            let rule_path = tmp.path().join("rules.ignore");
-            fs::create_dir_all(&local).expect("local dir");
-            fs::create_dir_all(&cloud).expect("cloud dir");
+fn previous(db: &StateDb, item: &Item) -> Result<BTreeMap<String, StoredFileState>> {
+    Ok(db
+        .list_file_states(&item.id)?
+        .into_iter()
+        .map(|s| (s.relative_path.clone(), s))
+        .collect())
+}
 
-            let db_path = tmp.path().join("state.sqlite");
-            let mut db = StateDb::open(&db_path).expect("db");
-            let id = Uuid::new_v4().to_string();
-            let local_path = local.to_string_lossy();
-            let cloud_path = cloud.to_string_lossy();
-            let rule_path = rule_path.to_string_lossy();
-            db.insert_item(NewItem {
-                id: &id,
-                name: "demo",
-                item_type: "directory",
-                local_path: &local_path,
-                cloud_path: &cloud_path,
-                rule_path: &rule_path,
-                rules: &rules,
-            })
-            .expect("insert item");
-            let item = db.get_item("demo").expect("item");
-
-            Self {
-                _tmp: tmp,
-                local,
-                cloud,
-                db,
-                item,
-                rules,
+fn run_sync(db: &StateDb, item: &Item) -> Result<SyncSummary> {
+    if !Path::new(&item.local_path).exists() {
+        return Err(LinkerError::PathMissing(item.local_path.clone().into()));
+    }
+    let cloud = Path::new(&item.cloud_path);
+    if !cloud.exists() {
+        fs::create_dir_all(if item.item_type == "file" {
+            cloud.parent().unwrap()
+        } else {
+            cloud
+        })?;
+    }
+    let roots = Roots::open(item)?;
+    let plan = Plan::build(&roots, &previous(db, item)?)?;
+    plan.verify_controls(&roots)?;
+    let mut summary = SyncSummary {
+        item_name: item.name.clone(),
+        copied_local_to_cloud: 0,
+        copied_cloud_to_local: 0,
+        deleted_local: 0,
+        deleted_cloud: 0,
+        pruned_cloud_directories: 0,
+        unchanged: 0,
+        warnings: plan.warnings.clone(),
+        rules_fingerprint: plan.fingerprint(),
+    };
+    // Retire baselines BEFORE pruning. A partial failure must never turn cleanup
+    // into a user deletion that propagates back to the source after a rule edit.
+    for rel in &plan.forget {
+        db.forget_file_state(&item.id, rel)?;
+    }
+    for op in &plan.controls {
+        apply(db, item, &roots, op, &mut summary)?;
+    }
+    for (rel, directory) in &plan.prune {
+        let removed = roots.cloud.remove(rel, *directory).map_err(|error| {
+            std::io::Error::other(format!(
+                "target cleanup failed at {}: {error}; already removed {} file(s)/link(s) and {} directorie(s)",
+                roots.cloud.path.join(rel).display(), summary.deleted_cloud, summary.pruned_cloud_directories
+            ))
+        })?;
+        if removed {
+            if *directory {
+                summary.pruned_cloud_directories += 1;
+            } else {
+                summary.deleted_cloud += 1;
             }
         }
     }
-
-    #[test]
-    fn copies_local_file_to_cloud() {
-        let fixture = Fixture::new(vec![]);
-        write_file(&fixture.local.join("README.md"), "local", 100);
-
-        let summary = sync_item(&fixture.db, &fixture.item, &fixture.rules).expect("sync");
-
-        assert_eq!(summary.copied_local_to_cloud, 1);
-        assert_eq!(read_file(&fixture.cloud.join("README.md")), "local");
-
-        let summary = sync_item(&fixture.db, &fixture.item, &fixture.rules).expect("sync again");
-        assert_eq!(summary.unchanged, 1);
+    for op in &plan.files {
+        apply(db, item, &roots, op, &mut summary)?;
     }
+    db.mark_item_synced(&item.id)?;
+    Ok(summary)
+}
 
-    #[test]
-    fn copies_cloud_file_to_local() {
-        let fixture = Fixture::new(vec![]);
-        write_file(&fixture.cloud.join("notes.md"), "cloud", 100);
-
-        let summary = sync_item(&fixture.db, &fixture.item, &fixture.rules).expect("sync");
-
-        assert_eq!(summary.copied_cloud_to_local, 1);
-        assert_eq!(read_file(&fixture.local.join("notes.md")), "cloud");
+/// Read-only operation inventory for deployment/backup tooling. Both roots must exist.
+#[derive(Debug, serde::Serialize)]
+pub struct SyncPreview {
+    pub item_name: String,
+    pub operations: Vec<PreviewOperation>,
+    pub warnings: Vec<RuleWarning>,
+}
+#[derive(Debug, serde::Serialize)]
+pub struct PreviewOperation {
+    pub action: String,
+    pub path: PathBuf,
+}
+pub fn preview_item(db: &StateDb, item: &Item) -> Result<SyncPreview> {
+    let _lock = db.lock_item(&item.id)?;
+    let item = db.get_item(&item.id)?;
+    let roots = Roots::open(&item)?;
+    let plan = Plan::build(&roots, &previous(db, &item)?)?;
+    plan.verify_controls(&roots)?;
+    let mut operations = Vec::new();
+    for op in plan.controls.iter().chain(&plan.files) {
+        let (action, path) = match op.decision {
+            Decision::CopyLocalToCloud => (
+                "write_target",
+                roots.cloud.path.join(roots.cloud_rel(&op.relative)),
+            ),
+            Decision::CopyCloudToLocal => (
+                "write_source",
+                roots.local.path.join(roots.local_rel(&op.relative)),
+            ),
+            Decision::DeleteLocal => (
+                "delete_source",
+                roots.local.path.join(roots.local_rel(&op.relative)),
+            ),
+            Decision::DeleteCloud => (
+                "delete_target",
+                roots.cloud.path.join(roots.cloud_rel(&op.relative)),
+            ),
+            _ => continue,
+        };
+        operations.push(PreviewOperation {
+            action: action.into(),
+            path,
+        });
     }
-
-    #[test]
-    fn latest_modified_file_wins() {
-        let fixture = Fixture::new(vec![]);
-        write_file(&fixture.local.join("same.txt"), "old local", 100);
-        write_file(&fixture.cloud.join("same.txt"), "new cloud", 200);
-
-        let summary = sync_item(&fixture.db, &fixture.item, &fixture.rules).expect("sync");
-
-        assert_eq!(summary.copied_cloud_to_local, 1);
-        assert_eq!(read_file(&fixture.local.join("same.txt")), "new cloud");
+    for (rel, dir) in &plan.prune {
+        operations.push(PreviewOperation {
+            action: if *dir {
+                "prune_target_directory"
+            } else {
+                "prune_target_file"
+            }
+            .into(),
+            path: roots.cloud.path.join(rel),
+        });
     }
-
-    #[test]
-    fn deletes_cloud_file_after_local_inner_delete() {
-        let fixture = Fixture::new(vec![]);
-        let local_file = fixture.local.join("src/a.txt");
-        let cloud_file = fixture.cloud.join("src/a.txt");
-        write_file(&local_file, "a", 100);
-
-        sync_item(&fixture.db, &fixture.item, &fixture.rules).expect("initial sync");
-        assert!(cloud_file.exists());
-
-        fs::remove_file(&local_file).expect("remove local");
-        let summary = sync_item(&fixture.db, &fixture.item, &fixture.rules).expect("delete sync");
-
-        assert_eq!(summary.deleted_cloud, 1);
-        assert!(!cloud_file.exists());
-    }
-
-    #[test]
-    fn excludes_matching_paths() {
-        let fixture = Fixture::new(vec![Rule {
-            pattern: "dist/".to_string(),
-        }]);
-        write_file(&fixture.local.join("dist/bundle.js"), "ignored", 100);
-        write_file(&fixture.local.join("src/app.js"), "included", 100);
-
-        let summary = sync_item(&fixture.db, &fixture.item, &fixture.rules).expect("sync");
-
-        assert_eq!(summary.copied_local_to_cloud, 1);
-        assert!(!fixture.cloud.join("dist/bundle.js").exists());
-        assert_eq!(read_file(&fixture.cloud.join("src/app.js")), "included");
-    }
-
-    #[test]
-    fn syncs_single_file_item() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let local = tmp.path().join("note.md");
-        let cloud = tmp.path().join("Linker/note.md");
-        let rule_path = tmp.path().join(".linker/rules/note.md.ignore");
-        write_file(&local, "local", 100);
-
-        let db_path = tmp.path().join("state.sqlite");
-        let mut db = StateDb::open(&db_path).expect("db");
-        let id = Uuid::new_v4().to_string();
-        let local_path = local.to_string_lossy();
-        let cloud_path = cloud.to_string_lossy();
-        let rule_path = rule_path.to_string_lossy();
-        db.insert_item(NewItem {
-            id: &id,
-            name: "note.md",
-            item_type: "file",
-            local_path: &local_path,
-            cloud_path: &cloud_path,
-            rule_path: &rule_path,
-            rules: &[],
-        })
-        .expect("insert item");
-        let item = db.get_item("note.md").expect("item");
-
-        let summary = sync_item(&db, &item, &[]).expect("sync");
-        assert_eq!(summary.copied_local_to_cloud, 1);
-        assert_eq!(read_file(&cloud), "local");
-
-        write_file(&cloud, "cloud", 200);
-        let summary = sync_item(&db, &item, &[]).expect("sync cloud edit");
-        assert_eq!(summary.copied_cloud_to_local, 1);
-        assert_eq!(read_file(&local), "cloud");
-    }
-
-    fn write_file(path: &Path, contents: &str, mtime: i64) {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("parent");
-        }
-        fs::write(path, contents).expect("write");
-        set_file_mtime(path, FileTime::from_unix_time(mtime, 0)).expect("mtime");
-    }
-
-    fn read_file(path: &Path) -> String {
-        fs::read_to_string(path).expect("read")
-    }
+    Ok(SyncPreview {
+        item_name: item.name.clone(),
+        operations,
+        warnings: plan.warnings,
+    })
 }

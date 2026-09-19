@@ -58,6 +58,7 @@ struct Daemon {
     dirty_items: BTreeSet<String>,
     last_event_at: Option<Instant>,
     last_reconcile_at: Instant,
+    warning_fingerprints: HashMap<String, String>,
 }
 
 impl Daemon {
@@ -70,6 +71,7 @@ impl Daemon {
             dirty_items: BTreeSet::new(),
             last_event_at: None,
             last_reconcile_at: Instant::now(),
+            warning_fingerprints: HashMap::new(),
         }
     }
 
@@ -164,27 +166,36 @@ impl Daemon {
         }
     }
 
-    fn sync_all(&self, reason: &str) {
-        for item in &self.items {
-            self.sync_one(&item.id, reason);
+    fn sync_all(&mut self, reason: &str) {
+        let ids: Vec<_> = self.items.iter().map(|item| item.id.clone()).collect();
+        for id in ids {
+            self.sync_one(&id, reason);
         }
     }
 
-    fn sync_one(&self, item_id: &str, reason: &str) {
-        let Some(item) = self.items.iter().find(|item| item.id == item_id) else {
+    fn sync_one(&mut self, item_id: &str, reason: &str) {
+        let Some(item) = self.items.iter().find(|item| item.id == item_id).cloned() else {
             return;
         };
 
         match ops::sync_item(Some(&item.id)) {
             Ok(summaries) => {
                 for summary in summaries {
+                    if self.warning_fingerprints.get(item_id) != Some(&summary.rules_fingerprint) {
+                        for warning in &summary.warnings {
+                            eprintln!("warning: {warning}");
+                        }
+                        self.warning_fingerprints
+                            .insert(item_id.to_owned(), summary.rules_fingerprint.clone());
+                    }
                     eprintln!(
-                        "linkerd {reason} synced {}: source->target={}, target->source={}, deleted_source={}, deleted_target={}, unchanged={}",
+                        "linkerd {reason} synced {}: source->target={}, target->source={}, deleted_source={}, deleted_target={}, pruned_target_directories={}, unchanged={}",
                         summary.item_name,
                         summary.copied_local_to_cloud,
                         summary.copied_cloud_to_local,
                         summary.deleted_local,
                         summary.deleted_cloud,
+                        summary.pruned_cloud_directories,
                         summary.unchanged
                     );
                 }

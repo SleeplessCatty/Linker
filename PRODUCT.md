@@ -12,7 +12,7 @@ MVP priorities:
 
 1. Add a source directory and target parent directory.
 2. Keep the source and target directories automatically synced in the background.
-3. Let the user define exclude rules.
+3. Let the user manage ignores through `.gitignore`.
 4. Use latest-modified-wins to resolve competing changes automatically.
 
 Everything else is secondary unless required to make those flows reliable.
@@ -53,29 +53,19 @@ Result:
 
 - creates a Linker item named `demo`
 - creates or reuses the target directory
-- creates local manifest and rule files under Application Support
+- creates a local schema-2 manifest under Application Support
 - performs initial sync
 - daemon keeps future changes synced
 
-### Customize Exclude Rules
+### Manage Ignore Files
 
-Default rule behavior is empty: Linker excludes nothing unless the user explicitly provides rules.
+Edit `.gitignore` in the source or target tree. Linker supports names, directory patterns, relative paths, and single-star wildcards only; advanced syntax is warned and skipped, not interpreted as Git-compatible matching. Nested rules accumulate without negation. See [USAGE.md](USAGE.md#ignore-files) for the exact subset.
 
-```bash
-linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --ignore-file ~/code/demo/.linkerignore
-linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs --exclude node_modules/ --exclude dist/
-linker rule demo exclude tmp/
-linker rule demo list
-linker rule demo include tmp/
-```
-
-When a new exclude rule is added, matching target files are removed, while source files are kept.
-
-Rules use the same matching semantics as Git ignore files. A directory can have multiple rules, either imported at add time with `--ignore-file` or passed inline with repeated `--exclude` arguments. The stored rule file is plain text: one rule per line.
+Matching source files remain unread and untouched; matching target copies, including target-only files, are deleted. Active `.gitignore` controls sync before effective rules are applied. Removing a rule restores normal sync without reverse-deleting the source. There are no manual rule commands, rule snapshots, or rule counts in current state.
 
 ### Automatic Sync
 
-After `linker add`, the daemon watches both:
+`linker add` performs initial sync immediately. The running daemon loads new associations on its next 5-minute reconciliation, then watches both:
 
 ```text
 source directory
@@ -88,12 +78,16 @@ When a change is detected:
 change detected
   -> short debounce
   -> scan changed item
-  -> apply exclude rules
+  -> resolve .gitignore controls and apply cumulative rules
   -> copy latest modified side
   -> update state
 ```
 
 The user should normally not need to run manual sync.
+
+### Inspect and Preview
+
+`linker list` presents one table with complete source/target paths, status, last successful sync time in UTC, and errors. `linker sync [name] --dry-run` previews the same control and data operations without applying them or changing sync state. It does not pause the daemon or reserve the plan for later execution.
 
 ### Latest Modified Wins
 
@@ -118,10 +112,7 @@ Stops syncing the item, removes local Linker association metadata, and deletes t
 ## MVP Command Set
 
 ```text
-linker add <source-directory> <target-parent-directory> [--ignore-file <path>] [--exclude <pattern>]...
-linker rule <name> list
-linker rule <name> exclude <pattern>
-linker rule <name> include <pattern>
+linker add <source-directory> <target-parent-directory>
 linker remove <name>
 linker delete <name>
 linker list
@@ -156,5 +147,5 @@ Then:
 - keep working in `~/code/demo`
 - see files directly in the target directory
 - edit target files from iPhone or iPad if the target parent is iCloud Drive
-- customize rules with `linker rule`
+- manage the supported basic patterns through `.gitignore`
 - rely on latest-modified-wins without managing conflicts manually

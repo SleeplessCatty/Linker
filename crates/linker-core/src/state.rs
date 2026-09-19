@@ -1,9 +1,9 @@
-use std::path::Path;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::rules::Rule;
 use crate::{LinkerError, Result};
 
 #[derive(Debug, Clone)]
@@ -13,16 +13,9 @@ pub struct Item {
     pub item_type: String,
     pub local_path: String,
     pub cloud_path: String,
-    pub rule_path: String,
     pub status: String,
     pub last_sync_at: Option<i64>,
     pub last_error: Option<String>,
-    pub exclude_count: i64,
-}
-
-#[derive(Debug, Clone)]
-pub struct ExcludeRule {
-    pub pattern: String,
 }
 
 #[derive(Debug, Clone)]
@@ -57,21 +50,39 @@ pub struct NewItem<'a> {
     pub item_type: &'a str,
     pub local_path: &'a str,
     pub cloud_path: &'a str,
-    pub rule_path: &'a str,
-    pub rules: &'a [Rule],
 }
 
 pub struct StateDb {
     conn: Connection,
+    directory: PathBuf,
 }
 
 impl StateDb {
+    /// Preview must not initialize or migrate state. Only synchronization lock
+    /// files may be created when a caller subsequently previews an item.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        conn.busy_timeout(std::time::Duration::from_secs(30))?;
+        let db = Self {
+            conn,
+            directory: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        };
+        if !db.column_exists("items", "id")? || db.column_exists("items", "rule_path")? {
+            return Err(std::io::Error::other("dry-run requires upgraded Linker state; back up and complete the schema-2 upgrade first (see INSTALL.md)").into());
+        }
+        Ok(db)
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(path)?;
-        let db = Self { conn };
+        let directory = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let _migration_lock = crate::lock::acquire(&directory.join("locks"), "migration")?;
+        let mut conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(30))?;
+        crate::migration::upgrade(&mut conn, &directory)?;
+        let db = Self { conn, directory };
         db.migrate()?;
         Ok(db)
     }
@@ -90,21 +101,11 @@ impl StateDb {
                 item_type TEXT NOT NULL DEFAULT 'directory',
                 local_path TEXT NOT NULL UNIQUE,
                 cloud_path TEXT NOT NULL,
-                rule_path TEXT NOT NULL,
                 status TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 last_sync_at INTEGER,
                 last_error TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS exclude_rules (
-                id TEXT PRIMARY KEY,
-                item_id TEXT NOT NULL,
-                pattern TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                UNIQUE(item_id, pattern),
-                FOREIGN KEY (item_id) REFERENCES items(id)
             );
 
             CREATE TABLE IF NOT EXISTS file_states (
@@ -131,6 +132,10 @@ impl StateDb {
                 [],
             )?;
         }
+        self.conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, ?1)",
+            [Utc::now().timestamp()],
+        )?;
         Ok(())
     }
 
@@ -168,10 +173,10 @@ impl StateDb {
         tx.execute(
             r#"
             INSERT INTO items (
-                id, name, item_type, local_path, cloud_path, rule_path, status,
+                id, name, item_type, local_path, cloud_path, status,
                 created_at, updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?7)
+            VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?6)
             "#,
             params![
                 item.id,
@@ -179,27 +184,9 @@ impl StateDb {
                 item.item_type,
                 item.local_path,
                 item.cloud_path,
-                item.rule_path,
                 now
             ],
         )?;
-
-        for rule in item.rules {
-            tx.execute(
-                r#"
-                INSERT OR IGNORE INTO exclude_rules (
-                    id, item_id, pattern, created_at
-                )
-                VALUES (?1, ?2, ?3, ?4)
-                "#,
-                params![
-                    uuid::Uuid::new_v4().to_string(),
-                    item.id,
-                    &rule.pattern,
-                    now
-                ],
-            )?;
-        }
 
         tx.commit()?;
         Ok(())
@@ -214,14 +201,10 @@ impl StateDb {
                 i.item_type,
                 i.local_path,
                 i.cloud_path,
-                i.rule_path,
                 i.status,
                 i.last_sync_at,
-                i.last_error,
-                COUNT(r.id) AS exclude_count
+                i.last_error
             FROM items i
-            LEFT JOIN exclude_rules r ON r.item_id = i.id
-            GROUP BY i.id
             ORDER BY i.name
             "#,
         )?;
@@ -233,11 +216,9 @@ impl StateDb {
                 item_type: row.get(2)?,
                 local_path: row.get(3)?,
                 cloud_path: row.get(4)?,
-                rule_path: row.get(5)?,
-                status: row.get(6)?,
-                last_sync_at: row.get(7)?,
-                last_error: row.get(8)?,
-                exclude_count: row.get(9)?,
+                status: row.get(5)?,
+                last_sync_at: row.get(6)?,
+                last_error: row.get(7)?,
             })
         })?;
 
@@ -261,63 +242,21 @@ impl StateDb {
             "DELETE FROM file_states WHERE item_id = ?1",
             params![&item.id],
         )?;
-        self.conn.execute(
-            "DELETE FROM exclude_rules WHERE item_id = ?1",
-            params![&item.id],
-        )?;
         self.conn
             .execute("DELETE FROM items WHERE id = ?1", params![&item.id])?;
         Ok(item)
     }
 
-    pub fn add_user_exclude(&self, name: &str, pattern: &str) -> Result<Item> {
-        let item = self.get_item(name)?;
-        let now = Utc::now().timestamp();
-        self.conn.execute(
-            r#"
-            INSERT OR IGNORE INTO exclude_rules (
-                id, item_id, pattern, created_at
-            )
-            VALUES (?1, ?2, ?3, ?4)
-            "#,
-            params![uuid::Uuid::new_v4().to_string(), &item.id, pattern, now],
-        )?;
-        Ok(item)
+    pub fn lock_item(&self, id: &str) -> Result<File> {
+        crate::lock::acquire(&self.directory.join("locks"), &format!("item:{id}"))
     }
 
-    pub fn remove_user_exclude(&self, name: &str, pattern: &str) -> Result<Item> {
-        let item = self.get_item(name)?;
+    pub fn forget_file_state(&self, item_id: &str, relative_path: &str) -> Result<()> {
         self.conn.execute(
-            r#"
-            DELETE FROM exclude_rules
-            WHERE item_id = ?1 AND pattern = ?2
-            "#,
-            params![&item.id, pattern],
+            "DELETE FROM file_states WHERE item_id = ?1 AND relative_path = ?2",
+            params![item_id, relative_path],
         )?;
-        Ok(item)
-    }
-
-    pub fn list_excludes_for_item(&self, item_id: &str) -> Result<Vec<ExcludeRule>> {
-        let mut stmt = self.conn.prepare(
-            r#"
-            SELECT pattern
-            FROM exclude_rules
-            WHERE item_id = ?1
-            ORDER BY pattern
-            "#,
-        )?;
-
-        let rows = stmt.query_map(params![item_id], |row| {
-            Ok(ExcludeRule {
-                pattern: row.get(0)?,
-            })
-        })?;
-
-        let mut rules = Vec::new();
-        for row in rows {
-            rules.push(row?);
-        }
-        Ok(rules)
+        Ok(())
     }
 
     pub fn list_file_states(&self, item_id: &str) -> Result<Vec<StoredFileState>> {

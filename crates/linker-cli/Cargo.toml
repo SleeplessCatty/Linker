@@ -9,10 +9,13 @@ name = "linker"
 path = "src/main.rs"
 
 [dependencies]
+chrono.workspace = true
 clap.workspace = true
 linker-core = { path = "../linker-core" }
+unicode-width.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 assert_cmd.workspace = true
 filetime.workspace = true
 predicates.workspace = true

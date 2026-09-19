@@ -2,7 +2,22 @@
 
 Linker currently uses a simple user-level install script.
 
-## Incompatible Upgrade to 0.2
+## Upgrade from Linker 0.2 to 0.3.0
+
+The SQLite/manifest schema migrates to version 2 while retaining associations and per-file state. Before any schema change, Linker backs up metadata to `~/Library/Application Support/Linker/backups/gitignore-v2/`. Migration can resume after interruption. Old manual rules are archived only and stop applying; only confirmed Linker-owned rule snapshots are removed. New installations do not create `rules/`.
+
+This metadata backup does **not** back up user files or old binaries. Before installing:
+
+1. Stop the old LaunchAgent (`launchctl bootout gui/$(id -u)/com.linker.linkerd`).
+2. Back up the entire Linker Application Support directory and LaunchAgent plist outside all sync trees.
+3. Inventory effective `.gitignore` changes and ignored target files; back up controls to be overwritten and target files to be removed. For a read-only sync inventory, copy the database to a staging directory and use `cargo run -p linker-core --example preview -- /path/to/staging/state.sqlite`. Opening the staging DB migrates that copy; do not point the preview helper at unbacked-up live metadata.
+   After schema 2 is already installed, `linker sync --dry-run` provides a direct CLI preview without migration. Keep the daemon stopped while reviewing if you need to prevent independent background changes.
+4. Install from this checkout, verify all associations, logs and `linker doctor`, then run a second sync to confirm stability.
+5. On upgrade failure, stop the new daemon before restoring metadata, binaries, plist, and affected user files from backup, then restart the old service.
+
+User `.gitignore` text is never automatically rewritten. Unsupported patterns warn and are skipped; valid patterns can remove target copies that an unsupported negation previously protected. Review [USAGE.md](USAGE.md#ignore-files) before enabling the new daemon. Version 0.3.0 does not publish a GitHub Release in this change.
+
+## Historical Pre-0.2 Clean Cutover
 
 Installing Linker 0.2 performs a clean cutover from any pre-0.2 installation:
 
@@ -51,6 +66,20 @@ export PATH="$PATH:$HOME/Library/Application Support/Linker/bin"
 
 Add that line to your shell profile if you want it to persist.
 
+## Update an Existing Script Installation
+
+The script installation consists of two real binaries under `~/Library/Application Support/Linker/bin/`, command symlinks under `/usr/local/bin/`, and the user LaunchAgent `~/Library/LaunchAgents/com.linker.linkerd.plist`. It is not a Homebrew service. LaunchAgent label `com.linker.linkerd` starts the daemon at login and keeps it running; logs and SQLite state remain under Application Support.
+
+For an installation with working command links, update from the intended local checkout:
+
+1. Run the tests and `cargo build --release` before stopping the working service.
+2. Stop the loaded service with `launchctl bootout gui/$(id -u)/com.linker.linkerd`. Confirm it stopped; investigate failures rather than ignoring them.
+3. Back up the Application Support directory and LaunchAgent plist outside the sync trees. For already-upgraded state, run `linker sync --dry-run` while stopped and back up any files that the next pass could overwrite/delete.
+4. Run `./scripts/install.sh --no-link`. This rebuilds and replaces **both** `linker` and `linkerd`, writes the plist and restarts the service. Existing `/usr/local/bin` symlinks continue to work; `--no-link` does not remove them and no new PATH entry is needed.
+5. Verify `linker --version`, `linker list`, `linker doctor`, `linker sync --dry-run`, and `launchctl print gui/$(id -u)/com.linker.linkerd`.
+
+This preserves schema-2 associations and file state. Keep the backup until verification is complete. If installation fails, stop any newly started daemon before restoring the saved binaries/state/plist and restarting the previous service. Updating the binaries is separate from committing or pushing repository changes; it does not create a GitHub Release.
+
 ## Remote Script Install
 
 After the GitHub repository is published, install directly from the remote script:
@@ -68,7 +97,7 @@ curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/
 Install a specific branch, tag, or commit:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/install-remote.sh | LINKER_REF=v0.2.0 bash
+curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/install-remote.sh | LINKER_REF=main bash
 ```
 
 The remote installer requires `git` and Rust/Cargo on the target Mac. It fetches the selected branch, tag, or commit into a temporary directory, then runs `scripts/install.sh`. A legacy database cleanup also requires the macOS `sqlite3` command so the installer can fail closed around recorded source and target paths.
@@ -137,12 +166,12 @@ brew tap SleeplessCatty/linker
 brew install --HEAD linker
 ```
 
-The checked-in formula is intentionally `HEAD`-only until the `v0.2.0` GitHub release exists.
+The checked-in formula is intentionally `HEAD`-only until a stable GitHub release is published.
 
 After publishing a stable GitHub release, add `url` and `sha256` to the formula. Calculate the release tarball SHA256 with:
 
 ```bash
-curl -L https://github.com/<user>/Linker/archive/refs/tags/v0.2.0.tar.gz | shasum -a 256
+curl -L "https://github.com/<user>/Linker/archive/refs/tags/<published-tag>.tar.gz" | shasum -a 256
 ```
 
 The formula installs binaries and a LaunchAgent template only. It does not manage user LaunchAgents or perform the incompatible pre-0.2 cleanup, so it is a fresh-install path, not an upgrade path. Existing pre-0.2 users must run the guarded script installer first.

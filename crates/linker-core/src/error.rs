@@ -26,14 +26,8 @@ pub enum LinkerError {
     #[error("invalid item name: {0}")]
     InvalidName(String),
 
-    #[error("invalid rule pattern: {0}")]
-    InvalidRulePattern(String),
-
     #[error("invalid sync association: {0}")]
     InvalidAssociation(String),
-
-    #[error("rule pattern failed: {0}")]
-    Rule(String),
 
     #[error("failed to strip path prefix: {0}")]
     StripPrefix(String),

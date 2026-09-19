@@ -19,29 +19,31 @@ Status: completed
 - [x] Create core library for paths, manifest, and state
 - [x] Initialize SQLite state database
 - [x] Implement `linker add <source-directory> <target-parent-directory>`
-- [x] Implement `linker list`
+- [x] Implement `linker list` as a Unicode-aligned table with full paths, UTC times and errors
 - [x] Implement `linker status` daemon health
 - [x] Create target directory under the target parent
 - [x] Write manifest under Application Support
-- [x] Write rule snapshot under Application Support
-- [x] Verify with `cargo test` once Rust toolchain is available
+- [x] Write schema-2 manifests; archive retired rule snapshots
+- [x] Verify with workspace tests, format, strict Clippy and compilation checks
 
-## Phase 2: Exclude Rules
+## Phase 2: Basic `.gitignore` (0.3.0)
 
-- [x] Default to empty excludes
-- [x] Support explicit `--ignore-file`
-- [x] Support explicit `--exclude`
-- [x] Implement `linker rule <name> exclude <pattern>`
-- [x] Implement `linker rule <name> include <pattern>`
-- [x] Implement `linker rule <name> list`
-- [x] Show exclude count in `linker list`
-- [ ] Dry scan report during add
+- [x] Load only in-tree `.gitignore` controls; nested additive rules
+- [x] Match names, directories, relative paths, single `*`
+- [x] Warn and skip unsupported advanced syntax
+- [x] Resolve controls before data; preserve ignored source contents
+- [x] Clean target-only ignored paths without following symlinks
+- [x] Retire ignored baselines and restore normal sync after rule removal
+- [x] Remove manual rule APIs, CLI flags, counters, snapshots and full matcher dependency
+- [x] Back up and migrate schema 1 to schema 2, preserving associations/state
+- [x] Add read-only core preview helper for upgrade inventories
+- [x] Public CLI preview: `linker sync [name] --dry-run`, read-only sync state and explicit legacy/missing-root errors
 
 ## Phase 3: Manual Sync Engine
 
 - [x] Scan source directory
 - [x] Scan target directory
-- [x] Apply exclude rules
+- [x] Apply simplified `.gitignore` rules
 - [x] Compare mtime, size, and hash when needed
 - [x] Implement latest-modified-wins copy plan
 - [x] Copy source changes to target
@@ -84,7 +86,18 @@ Status: completed
 - [x] Add simplified `linker doctor`
 - [x] Show daemon installed/running state in `linker status`
 - [x] Improve user-facing errors
-- [ ] Add integration tests with temporary folders
+- [x] Add integration tests with temporary folders
+
+## Documentation and Acceptance (0.3.0)
+
+- [x] Document table fields, UTC timestamps, empty values and wide-terminal usage
+- [x] Document dry-run actions, prerequisites and independent daemon activity
+- [x] Clarify new-association watcher timing and file/empty-directory behavior
+- [x] Record committed functionality, tests and deferred scope in `docs/PROJECT_AUDIT.md`
+- [x] Include strict Clippy in CI and the pre-push checklist
+- [x] Keep GitHub Release and stable Homebrew publishing outside this change
+
+The current agreed CLI/ignore/sync scope has implementation and test coverage. Items below remain deliberately deferred, not silently marked complete. No `add --dry-run` interface is introduced: `add` still accepts only the two directory arguments and performs initial sync.
 
 ## Deferred
 

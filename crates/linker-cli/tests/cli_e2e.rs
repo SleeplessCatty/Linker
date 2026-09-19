@@ -54,12 +54,6 @@ impl Sandbox {
             .join("manifests")
             .join(format!("{name}.json"))
     }
-
-    fn rule_path(&self, name: &str) -> PathBuf {
-        self.app_support
-            .join("rules")
-            .join(format!("{name}.ignore"))
-    }
 }
 
 #[test]
@@ -71,7 +65,7 @@ fn reports_linker_name_and_version() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(pred_contains("linker 0.2.0"));
+        .stdout(pred_contains("linker 0.3.0"));
 }
 
 #[test]
@@ -98,22 +92,22 @@ fn add_list_status_and_remove_item_keep_source_and_target() {
     let target_readme = sandbox.item_path("demo").join("README.md");
     assert_eq!(read_file(&target_readme), "hello");
     assert!(sandbox.manifest_path("demo").exists());
-    assert!(sandbox.rule_path("demo").exists());
+    assert!(!sandbox.app_support.join("rules").exists());
 
     sandbox
         .linker()
         .arg("list")
         .assert()
         .success()
-        .stdout(pred_contains("----------------------------------------"))
-        .stdout(pred_contains("name: demo"))
+        .stdout(pred_contains("| NAME"))
+        .stdout(pred_contains("| demo"))
         .stdout(pred_contains("directory"))
-        .stdout(pred_contains("status: active"))
-        .stdout(pred_contains("source:"))
+        .stdout(pred_contains("active"))
+        .stdout(pred_contains("SOURCE"))
         .stdout(pred_contains(source.to_str().unwrap()))
-        .stdout(pred_contains("target:"))
+        .stdout(pred_contains("TARGET"))
         .stdout(pred_contains(sandbox.item_path("demo").to_str().unwrap()))
-        .stdout(pred_contains("rules: 0"));
+        .stdout(predicates::str::contains("rules:").not().from_utf8());
 
     sandbox
         .linker()
@@ -137,11 +131,11 @@ fn add_list_status_and_remove_item_keep_source_and_target() {
     assert!(source.join("README.md").exists());
     assert!(target_readme.exists());
     assert!(!sandbox.manifest_path("demo").exists());
-    assert!(!sandbox.rule_path("demo").exists());
+    assert!(!sandbox.app_support.join("rules").exists());
 }
 
 #[test]
-fn list_separates_multiple_items_and_emphasizes_names() {
+fn list_displays_multiple_items_in_a_single_table() {
     let sandbox = Sandbox::new();
     let alpha = sandbox.source_dir("alpha");
     let beta = sandbox.source_dir("beta");
@@ -167,15 +161,200 @@ fn list_separates_multiple_items_and_emphasizes_names() {
         .assert()
         .success();
 
-    sandbox
+    let output = sandbox.linker().arg("list").output().unwrap();
+    assert!(output.status.success());
+    let table = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(table.matches("| NAME").count(), 1);
+    assert!(table.contains("| alpha"));
+    assert!(table.contains("| beta"));
+    assert!(table.find("| alpha").unwrap() < table.find("| beta").unwrap());
+    for heading in [
+        "TYPE",
+        "STATUS",
+        "SOURCE",
+        "TARGET",
+        "LAST SYNC (UTC)",
+        "LAST ERROR",
+    ] {
+        assert!(table.contains(heading));
+    }
+}
+
+#[test]
+fn list_empty_state_is_explicit() {
+    Sandbox::new()
         .linker()
         .arg("list")
         .assert()
         .success()
-        .stdout(pred_contains("----------------------------------------"))
-        .stdout(pred_contains("name: alpha"))
-        .stdout(pred_contains("name: beta"))
-        .stdout(pred_contains("target:"));
+        .stdout("no items\n");
+}
+
+#[test]
+fn dry_run_shows_effective_rule_cleanup_without_changing_files_or_state() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.source_dir("demo");
+    write_file(&source.join("cache.log"), "keep source");
+    sandbox
+        .linker()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    write_file(&source.join(".gitignore"), "*.log\n!cache.log\n");
+    write_file(&sandbox.item_path("demo").join("target-only.log"), "cloud");
+    write_file(&source.join("new.txt"), "new");
+    let db_path = sandbox.app_support.join("state.sqlite");
+    let before = fs::read(&db_path).unwrap();
+    let manifest = fs::read(sandbox.manifest_path("demo")).unwrap();
+    for args in [vec!["sync", "--dry-run"], vec!["sync", "demo", "--dry-run"]] {
+        sandbox
+            .linker()
+            .args(args)
+            .assert()
+            .success()
+            .stdout(pred_contains("dry run: demo"))
+            .stdout(pred_contains("write_target"))
+            .stdout(pred_contains("prune_target_file"))
+            .stdout(pred_contains("target-only.log"))
+            .stderr(pred_contains(".gitignore:2: skipped"));
+        assert!(sandbox.item_path("demo").join("cache.log").exists());
+        assert!(sandbox.item_path("demo").join("target-only.log").exists());
+        assert!(!sandbox.item_path("demo").join(".gitignore").exists());
+        assert!(!sandbox.item_path("demo").join("new.txt").exists());
+        assert_eq!(fs::read(&db_path).unwrap(), before);
+        assert_eq!(fs::read(sandbox.manifest_path("demo")).unwrap(), manifest);
+    }
+    sandbox.linker().args(["sync", "demo"]).assert().success();
+    assert!(!sandbox.item_path("demo").join("cache.log").exists());
+    assert_eq!(read_file(&source.join("cache.log")), "keep source");
+    sandbox
+        .linker()
+        .args(["sync", "demo", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(pred_contains("no changes"));
+}
+
+#[test]
+fn dry_run_reports_both_deletion_directions_and_target_to_source_copy() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.source_dir("demo");
+    for name in ["deleted-source.txt", "deleted-target.txt"] {
+        write_file(&source.join(name), "original");
+    }
+    sandbox
+        .linker()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    fs::remove_file(source.join("deleted-source.txt")).unwrap();
+    fs::remove_file(sandbox.item_path("demo").join("deleted-target.txt")).unwrap();
+    write_file(
+        &sandbox.item_path("demo").join("cloud-only.txt"),
+        "new target",
+    );
+    let before = fs::read(sandbox.app_support.join("state.sqlite")).unwrap();
+    sandbox
+        .linker()
+        .args(["sync", "demo", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(pred_contains("delete_source"))
+        .stdout(pred_contains("delete_target"))
+        .stdout(pred_contains("write_source"));
+    assert!(source.join("deleted-target.txt").exists());
+    assert!(sandbox
+        .item_path("demo")
+        .join("deleted-source.txt")
+        .exists());
+    assert!(!source.join("cloud-only.txt").exists());
+    assert_eq!(
+        fs::read(sandbox.app_support.join("state.sqlite")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn dry_run_missing_target_fails_without_creating_it() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.source_dir("demo");
+    sandbox
+        .linker()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    fs::remove_dir(sandbox.item_path("demo")).unwrap();
+    let before = fs::read(sandbox.app_support.join("state.sqlite")).unwrap();
+    sandbox
+        .linker()
+        .args(["sync", "demo", "--dry-run"])
+        .assert()
+        .failure();
+    assert!(!sandbox.item_path("demo").exists());
+    assert_eq!(
+        fs::read(sandbox.app_support.join("state.sqlite")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn dry_run_without_state_does_not_initialize_application_storage() {
+    let sandbox = Sandbox::new();
+    fs::remove_dir(&sandbox.app_support).unwrap();
+    sandbox
+        .linker()
+        .args(["sync", "--dry-run"])
+        .assert()
+        .success()
+        .stdout("no items\n");
+    sandbox
+        .linker()
+        .args(["sync", "missing", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(pred_contains("item was not found"));
+    assert!(!sandbox.app_support.exists());
+}
+
+#[test]
+fn dry_run_control_error_does_not_update_last_error_or_copy_files() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.source_dir("demo");
+    sandbox
+        .linker()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            sandbox.target_parent.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    fs::create_dir(source.join(".gitignore")).unwrap();
+    write_file(&source.join("new.txt"), "new");
+    let before = fs::read(sandbox.app_support.join("state.sqlite")).unwrap();
+    sandbox
+        .linker()
+        .args(["sync", "demo", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(pred_contains("cannot resolve control"));
+    assert_eq!(
+        fs::read(sandbox.app_support.join("state.sqlite")).unwrap(),
+        before
+    );
+    assert!(!sandbox.item_path("demo").join("new.txt").exists());
 }
 
 #[test]
@@ -206,16 +385,21 @@ fn delete_removes_target_but_keeps_source() {
     assert!(source.join("README.md").exists());
     assert!(!sandbox.item_path("demo").exists());
     assert!(!sandbox.manifest_path("demo").exists());
-    assert!(!sandbox.rule_path("demo").exists());
+    assert!(!sandbox.app_support.join("rules").exists());
 }
 
 #[test]
-fn add_defaults_to_empty_ignore_and_can_use_ignore_file_or_inline_excludes() {
+fn only_gitignore_controls_initial_sync() {
     let sandbox = Sandbox::new();
     let source = sandbox.source_dir("demo");
-    write_file(&source.join(".env"), "secret");
-    write_file(&source.join("node_modules/pkg/index.js"), "pkg");
-
+    write_file(&source.join(".gitignore"), "*.log\ncache/\n!keep.log\n");
+    write_file(
+        &source.join("keep.log"),
+        "ignored despite unsupported negation",
+    );
+    write_file(&source.join("cache/data"), "source cache");
+    write_file(&source.join(".env"), "included unless explicitly ignored");
+    write_file(&sandbox.item_path("demo").join("target.log"), "target only");
     sandbox
         .linker()
         .args([
@@ -224,67 +408,45 @@ fn add_defaults_to_empty_ignore_and_can_use_ignore_file_or_inline_excludes() {
             sandbox.target_parent.to_str().unwrap(),
         ])
         .assert()
-        .success();
-
-    assert_eq!(read_file(&sandbox.item_path("demo").join(".env")), "secret");
-    assert_eq!(
-        read_file(&sandbox.item_path("demo").join("node_modules/pkg/index.js")),
-        "pkg"
-    );
-
-    let second = sandbox.source_dir("second");
-    write_file(&second.join("src/app.js"), "app");
-    write_file(&second.join("dist/bundle.js"), "bundle");
-    let ignore_file = sandbox.app_support.join("rules.ignore");
-    write_file(&ignore_file, "dist/\ntmp/\n");
-
-    sandbox
-        .linker()
-        .args([
-            "add",
-            second.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
-            "--ignore-file",
-            ignore_file.to_str().unwrap(),
-            "--exclude",
-            "tmp/",
-            "--exclude",
-            "dist/",
-        ])
-        .assert()
         .success()
-        .stdout(pred_contains("rules: 2"));
-
-    assert!(sandbox.item_path("second").join("src/app.js").exists());
-    assert!(!sandbox.item_path("second").join("dist/bundle.js").exists());
-    assert_eq!(read_file(&sandbox.rule_path("second")), "dist/\ntmp/\n");
+        .stderr(pred_contains(".gitignore:3: skipped"))
+        .stdout(pred_contains("initial sync deleted target: 1"));
+    assert!(source.join("keep.log").exists());
+    assert!(!sandbox.item_path("demo").join("keep.log").exists());
+    assert!(!sandbox.item_path("demo").join("cache").exists());
+    assert!(!sandbox.item_path("demo").join("target.log").exists());
+    assert!(sandbox.item_path("demo").join(".env").exists());
+    assert!(sandbox.item_path("demo").join(".gitignore").exists());
+    assert!(!sandbox.app_support.join("rules").exists());
     assert!(
-        !sqlite_table_info(&sandbox.app_support.join("state.sqlite"), "exclude_rules")
-            .contains(&"source".to_string())
+        !sqlite_table_info(&sandbox.app_support.join("state.sqlite"), "items")
+            .contains(&"rule_path".into())
     );
+    assert!(
+        sqlite_table_info(&sandbox.app_support.join("state.sqlite"), "exclude_rules").is_empty()
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_str(&read_file(&sandbox.manifest_path("demo"))).unwrap();
+    assert_eq!(manifest["schema_version"], 2);
+    assert!(manifest.get("rule_path").is_none());
+}
 
+#[test]
+fn rejects_retired_rule_interfaces() {
+    let sandbox = Sandbox::new();
     sandbox
         .linker()
-        .args(["rule", "second", "list"])
+        .args(["rule", "demo", "list"])
         .assert()
-        .success()
-        .stdout(pred_contains("PATTERN"))
-        .stdout(pred_contains("dist/"))
-        .stdout(pred_contains("tmp/"));
-
-    sandbox
-        .linker()
-        .args(["rule", "second", "include", "dist/"])
-        .assert()
-        .success()
-        .stdout(pred_contains("rule included: dist/"))
-        .stdout(pred_contains("rules: 1"));
-
-    sandbox.linker().args(["sync", "second"]).assert().success();
-    assert_eq!(
-        read_file(&sandbox.item_path("second").join("dist/bundle.js")),
-        "bundle"
-    );
+        .failure();
+    for flag in ["--exclude", "--ignore-file"] {
+        sandbox
+            .linker()
+            .args(["add", "/source", "/target", flag, "rules"])
+            .assert()
+            .failure()
+            .stderr(pred_contains("unexpected argument"));
+    }
 }
 
 #[test]
@@ -338,12 +500,10 @@ fn nested_or_same_source_and_target_is_rejected() {
 }
 
 #[test]
-fn rule_exclude_prunes_target_and_rule_include_restores_after_sync() {
+fn editing_gitignore_prunes_target_and_removing_it_restores_source_content() {
     let sandbox = Sandbox::new();
     let source = sandbox.source_dir("demo");
-    write_file(&source.join("src/app.js"), "app");
     write_file(&source.join("tmp/cache.txt"), "cache");
-
     sandbox
         .linker()
         .args([
@@ -353,53 +513,22 @@ fn rule_exclude_prunes_target_and_rule_include_restores_after_sync() {
         ])
         .assert()
         .success();
-
-    let item_dir = sandbox.item_path("demo");
-    assert!(item_dir.join("tmp/cache.txt").exists());
-
+    write_file(&source.join(".gitignore"), "tmp/\n");
     sandbox
         .linker()
-        .args(["rule", "demo", "exclude", "tmp/"])
+        .args(["sync", "demo"])
         .assert()
         .success()
-        .stdout(pred_contains("rule excluded: tmp/"));
-
-    assert!(source.join("tmp/cache.txt").exists());
-    assert!(!item_dir.join("tmp/cache.txt").exists());
-    assert_eq!(read_file(&sandbox.rule_path("demo")), "tmp/\n");
-
-    sandbox
-        .linker()
-        .args(["rule", "demo", "exclude", "tmp/"])
-        .assert()
-        .success()
-        .stdout(pred_contains("rules: 1"));
-    assert_eq!(read_file(&sandbox.rule_path("demo")), "tmp/\n");
-
-    sandbox
-        .linker()
-        .args(["rule", "demo", "list"])
-        .assert()
-        .success()
-        .stdout(pred_contains("tmp/"));
-
-    sandbox
-        .linker()
-        .args(["rule", "demo", "include", "tmp/"])
-        .assert()
-        .success()
-        .stdout(pred_contains("rule included: tmp/"));
-
+        .stdout(pred_contains("deleted target: 1"));
+    assert_eq!(read_file(&source.join("tmp/cache.txt")), "cache");
+    assert!(!sandbox.item_path("demo").join("tmp").exists());
+    fs::remove_file(source.join(".gitignore")).unwrap();
     sandbox.linker().args(["sync", "demo"]).assert().success();
-    assert_eq!(read_file(&item_dir.join("tmp/cache.txt")), "cache");
-
-    sandbox
-        .linker()
-        .args(["rule", "demo", "include", "missing/"])
-        .assert()
-        .success()
-        .stdout(pred_contains("rule included: missing/"))
-        .stdout(pred_contains("rules: 0"));
+    assert_eq!(
+        read_file(&sandbox.item_path("demo").join("tmp/cache.txt")),
+        "cache"
+    );
+    assert!(!sandbox.item_path("demo").join(".gitignore").exists());
 }
 
 #[test]
@@ -531,13 +660,6 @@ fn errors_include_actionable_hints() {
 
     sandbox
         .linker()
-        .args(["rule", "missing", "exclude", ""])
-        .assert()
-        .failure()
-        .stderr(pred_contains("invalid rule pattern"));
-
-    sandbox
-        .linker()
         .args([
             "add",
             source.to_str().unwrap(),
@@ -592,25 +714,25 @@ fn help_describes_core_commands_and_rule_behavior() {
         .stdout(pred_contains(
             "Parent directory where the target directory will be created",
         ))
-        .stdout(pred_contains("does not import .gitignore"))
-        .stdout(pred_contains("--ignore-file"));
+        .stdout(pred_contains("Only .gitignore"))
+        .stdout(pred_contains("matching target files are deleted"))
+        .stdout(predicates::str::contains("--ignore-file").not().from_utf8())
+        .stdout(predicates::str::contains("--exclude").not().from_utf8());
 
     sandbox
         .linker()
-        .args(["rule", "demo", "exclude", "--help"])
+        .args(["list", "--help"])
         .assert()
         .success()
-        .stdout(pred_contains("prune matching target files"))
-        .stdout(pred_contains("source files are kept"));
-
+        .stdout(pred_contains("table"))
+        .stdout(pred_contains("UTC"));
     sandbox
         .linker()
-        .args(["rule", "demo", "include", "--help"])
+        .args(["sync", "--help"])
         .assert()
         .success()
-        .stdout(pred_contains("Include a path again"))
-        .stdout(pred_contains("If no existing rule matches"))
-        .stdout(pred_contains("next linker sync"));
+        .stdout(pred_contains("--dry-run"))
+        .stdout(pred_contains("without applying"));
 }
 
 fn pred_contains(text: &str) -> impl Predicate<[u8]> {

@@ -39,16 +39,11 @@ pub fn ensure_base_dirs() -> Result<()> {
     fs::create_dir_all(app_support_dir()?.join("logs"))?;
     fs::create_dir_all(app_support_dir()?.join("tmp"))?;
     fs::create_dir_all(app_manifests_dir()?)?;
-    fs::create_dir_all(app_rules_dir()?)?;
     Ok(())
 }
 
 pub fn app_manifests_dir() -> Result<PathBuf> {
     Ok(app_support_dir()?.join("manifests"))
-}
-
-pub fn app_rules_dir() -> Result<PathBuf> {
-    Ok(app_support_dir()?.join("rules"))
 }
 
 pub fn canonical_dir_create(path: &str) -> Result<PathBuf> {

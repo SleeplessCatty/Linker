@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use assert_cmd::prelude::*;
-use linker_core::ops::{self, AddOptions};
+use linker_core::state::{NewItem, StateDb};
 use tempfile::TempDir;
 
 struct Sandbox {
@@ -24,6 +24,9 @@ impl Sandbox {
         fs::create_dir_all(&target_parent).expect("target parent");
         fs::create_dir_all(&source).expect("source");
 
+        let app_support = app_support.canonicalize().unwrap();
+        let target_parent = target_parent.canonicalize().unwrap();
+        let source = source.canonicalize().unwrap();
         Self {
             _tmp: tmp,
             app_support,
@@ -72,17 +75,8 @@ fn daemon_help_uses_linkerd_name() {
 #[test]
 fn daemon_once_syncs_existing_item() {
     let sandbox = Sandbox::new();
-    std::env::set_var("HOME", sandbox._tmp.path());
-    std::env::set_var("LINKER_APP_SUPPORT_DIR", &sandbox.app_support);
-
     write_file(&sandbox.source.join("initial.txt"), "initial");
-    ops::add_item(AddOptions {
-        source_path: sandbox.source.to_string_lossy().to_string(),
-        target_parent_path: sandbox.target_parent.to_string_lossy().to_string(),
-        ignore_file: None,
-        excludes: Vec::new(),
-    })
-    .expect("add item");
+    seed(&sandbox);
 
     write_file(&sandbox.source.join("daemon.txt"), "daemon");
 
@@ -105,4 +99,83 @@ fn write_file(path: &Path, contents: &str) {
 
 fn read_file(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_else(|_| panic!("read file: {}", path.display()))
+}
+
+fn seed(sandbox: &Sandbox) {
+    fs::create_dir_all(sandbox.item_dir()).unwrap();
+    let mut db = StateDb::open(&sandbox.app_support.join("state.sqlite")).unwrap();
+    db.insert_item(NewItem {
+        id: "daemon-demo",
+        name: "demo",
+        item_type: "directory",
+        local_path: sandbox.source.to_str().unwrap(),
+        cloud_path: sandbox.item_dir().to_str().unwrap(),
+    })
+    .unwrap();
+    linker_core::sync::sync_item(&db, &db.get_item("demo").unwrap()).unwrap();
+}
+
+#[test]
+fn running_daemon_reloads_gitignore_and_deduplicates_warnings() {
+    use std::process::{Child, Stdio};
+    use std::time::{Duration, Instant};
+    struct Running(Child);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    fn wait_for(mut check: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !check() {
+            assert!(Instant::now() < deadline, "daemon event did not complete");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    let sandbox = Sandbox::new();
+    write_file(&sandbox.source.join(".gitignore"), "*.bad\n!keep.bad\n");
+    write_file(&sandbox.source.join("cache.log"), "source stays");
+    seed(&sandbox);
+    let log = sandbox._tmp.path().join("daemon.log");
+    let child = sandbox
+        .linkerd()
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let _running = Running(child);
+    wait_for(|| {
+        fs::read_to_string(&log)
+            .unwrap()
+            .contains("startup synced demo")
+    });
+    assert_eq!(
+        fs::read_to_string(&log).unwrap().matches("skipped").count(),
+        1
+    );
+
+    write_file(&sandbox.source.join("new.txt"), "event");
+    wait_for(|| sandbox.item_dir().join("new.txt").exists());
+    wait_for(|| {
+        fs::read_to_string(&log)
+            .unwrap()
+            .contains("event synced demo")
+    });
+    assert_eq!(
+        fs::read_to_string(&log).unwrap().matches("skipped").count(),
+        1
+    );
+
+    write_file(
+        &sandbox.source.join(".gitignore"),
+        "*.bad\n!keep.bad\n*.log\n",
+    );
+    wait_for(|| !sandbox.item_dir().join("cache.log").exists());
+    wait_for(|| fs::read_to_string(&log).unwrap().matches("skipped").count() == 2);
+    assert_eq!(read_file(&sandbox.source.join("cache.log")), "source stays");
+
+    fs::remove_file(sandbox.source.join(".gitignore")).unwrap();
+    wait_for(|| sandbox.item_dir().join("cache.log").exists());
+    assert!(!sandbox.item_dir().join(".gitignore").exists());
 }

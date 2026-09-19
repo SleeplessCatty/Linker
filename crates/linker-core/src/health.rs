@@ -182,26 +182,6 @@ fn lock_error_indicates_running(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::WouldBlock
 }
 
-#[cfg(test)]
-mod tests {
-    use std::io::{Error, ErrorKind};
-
-    use super::lock_error_indicates_running;
-
-    #[test]
-    fn only_lock_contention_indicates_a_running_daemon() {
-        assert!(lock_error_indicates_running(&Error::from(
-            ErrorKind::WouldBlock
-        )));
-        assert!(!lock_error_indicates_running(&Error::from(
-            ErrorKind::PermissionDenied
-        )));
-        assert!(!lock_error_indicates_running(&Error::from(
-            ErrorKind::Unsupported
-        )));
-    }
-}
-
 fn ok(name: &str, message: String) -> HealthCheck {
     HealthCheck {
         name: name.to_string(),
@@ -226,5 +206,25 @@ fn error(name: &str, message: String, hint: &str) -> HealthCheck {
         status: CheckStatus::Error,
         message,
         hint: Some(hint.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Error, ErrorKind};
+
+    use super::lock_error_indicates_running;
+
+    #[test]
+    fn only_lock_contention_indicates_a_running_daemon() {
+        assert!(lock_error_indicates_running(&Error::from(
+            ErrorKind::WouldBlock
+        )));
+        assert!(!lock_error_indicates_running(&Error::from(
+            ErrorKind::PermissionDenied
+        )));
+        assert!(!lock_error_indicates_running(&Error::from(
+            ErrorKind::Unsupported
+        )));
     }
 }

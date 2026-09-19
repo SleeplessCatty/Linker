@@ -143,6 +143,14 @@ linker sync demo
 
 Conflict behavior is latest-modified-wins. If source and target copies differ, the side with the newer modification time overwrites the older side. Equal modification times prefer the source.
 
+A target root that is gone is a recovery, not a deletion. `linker sync` recreates the root and restores it from the source, reporting:
+
+```text
+warning: the target root was missing; restored 2 file(s) from the source instead of propagating deletions
+```
+
+That means a moved, unmounted or lost target folder cannot empty the source tree. An existing target root keeps ordinary per-file semantics, including that deleting its last file propagates to the source, so run `linker check` first to see exactly which source files a sync would delete, or `linker repair` to refill the target without deleting anything. See [check and repair](#check-and-repair).
+
 ### Preview Before Syncing
 
 ```bash
@@ -189,7 +197,7 @@ The audit is read-only. It scans both directories with the same rules, control f
 | `ignored_target_content` | Target content matched by an effective `.gitignore` rule. The source copy is kept and the next sync removes this one. |
 | `unsupported_entry` | A symbolic link or another special file. It is never followed or synchronized. |
 
-The first four classes are counted as `divergent`; `ignored_target_content` and `unsupported_entry` are counted as `advisory` because they follow the documented ignore and file-type contract. `check` never writes files or baselines, never initializes or migrates state, and requires both roots to exist.
+The first four classes are counted as `divergent`; `ignored_target_content` and `unsupported_entry` are counted as `advisory` because they follow the documented ignore and file-type contract. An association whose only differences are advisories prints `consistent` and exits 0. `check` never writes files or baselines, never initializes or migrates state, and requires both roots to exist.
 
 ### Repair
 
@@ -206,10 +214,12 @@ linker repair demo --dry-run   # list the operations only
 
 - content that both sides have is overwritten with the authoritative copy;
 - a path only the source has is copied to the target, and the reverse with `--prefer target`;
-- a path only the non-authoritative side has is reported and kept unless `--prune` is given;
+- a path only the non-authoritative side has is reported and kept unless `--prune` is given; the note says whether the baselines recorded the other side's copy (`the other side deleted its copy after the last sync`) or the authoritative side never had that path (`the authoritative side never recorded this path`);
 - ignored target content and the losing side of a type conflict are removed only with `--prune`;
 - `--prefer newest` reproduces ordinary sync, including propagating a deletion that the baselines recorded; the default `source` restores from the source instead;
-- a file-versus-directory conflict needs an explicit `--prefer source` or `--prefer target`, because "newest" cannot compare a file with a directory.
+- a file-versus-directory conflict needs an explicit `--prefer source` or `--prefer target`, because "newest" cannot compare a file with a directory;
+- the chosen side also supplies the `.gitignore` rules for the pass, so rules and written content always come from the same side;
+- a retained single-file association keeps its target file optional: an absent file is content to restore, while a missing parent directory is a missing root.
 
 Repaired paths update the stored baselines, so the daemon does not revert the repair on its next pass. `--dry-run` prints the operations as `planned` without touching files or state.
 
@@ -292,6 +302,8 @@ Then open `Notes` in iCloud Drive on iPhone or iPad. Edits made there are synced
 ## Filesystem and Failure Boundaries
 
 Sync tracks regular file contents, not empty-directory history. Parent directories are created as needed for copied files; an ordinary file deletion can leave an empty parent directory. Symlink data entries are not copied or followed, while an ignored target symlink itself may be removed. New single-file associations are not supported by `add`; existing stored single-file associations are retained for compatibility.
+
+A target root that disappeared is recreated and restored from the source in the same pass, and that pass never propagates target-side deletions, so losing a target folder cannot empty the source. Deleting the whole target folder on purpose is therefore not a way to delete source content; remove the files in the source, or use `remove`/`delete` to stop tracking the association. An existing but emptied target root still follows per-file deletion semantics: use `linker check` to see the source files a sync would delete and `linker repair` to refill the target without deleting anything.
 
 `linker sync` applies associations in name order and stops at the first error; successful earlier changes are not rolled back. The daemon logs errors per association and continues with other associations, retrying on events/reconciliation. Control preflight errors stop that association before file operations; later I/O errors can leave a partially applied pass. Inspect `LAST ERROR`, preserve backups, and retry after correcting the cause.
 

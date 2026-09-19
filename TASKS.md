@@ -116,6 +116,14 @@ The current CLI/ignore/sync additions have implementation and test coverage, sub
 - [x] Report cleanup failure with the association already removed, the source kept and the target possibly partial
 - [x] Cover partial cleanup, injected database failure and symlink-swap regressions
 
+## Target-root Recovery
+
+- [x] Recreate an absent target root and restore from the source instead of propagating its content as deletions
+- [x] Report the recovery through the summary flag, the CLI warning and the daemon log
+- [x] Keep ordinary per-file deletion semantics for an existing target root, including its last file
+- [x] Point at `linker check` for the removals a sync would propagate and `linker repair` for a non-destructive refill
+- [x] Cover an absent root, an emptied root, an absent source root and a recovered-then-converged pair in integration and daemon tests
+
 ## Manual Consistency Check and Repair
 
 - [x] `linker check [name]`: read-only audit with content, one-sided, type-conflict, ignored-content and unsupported-entry classes

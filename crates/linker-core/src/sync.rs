@@ -22,6 +22,10 @@ pub struct SyncSummary {
     pub unchanged: usize,
     pub warnings: Vec<RuleWarning>,
     pub rules_fingerprint: String,
+    /// The target root was absent at the start of this pass while the baselines
+    /// still recorded target content. Its content was restored from the source
+    /// instead of being deleted as a per-file removal.
+    pub target_root_recovered: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +83,16 @@ fn decide(
             }
         }
         (None, None) => Decision::Deleted,
+    }
+}
+
+/// A target root that disappeared is an environment event, not a per-file
+/// deletion, so a deletion inferred from a baseline is restored instead.
+fn restore_guard(decision: Decision, restore_only: bool) -> Decision {
+    if restore_only && decision == Decision::DeleteLocal {
+        Decision::CopyLocalToCloud
+    } else {
+        decision
     }
 }
 
@@ -151,8 +165,47 @@ struct Plan {
     /// entries. Baseline paths inside them are left untouched instead of being
     /// read through the wrong entry kind.
     opaque: Vec<PathBuf>,
-    /// Strict scans abort on a type conflict; audits collect it instead.
+    /// How this scan resolves content, controls and conflicts.
+    options: PlanOptions,
+}
+
+/// Scan behaviour. Ordinary sync is strict and resolves content by modification
+/// time; audits collect conflicts and may resolve controls by a fixed side.
+#[derive(Debug, Clone, Copy)]
+struct PlanOptions {
+    /// Abort on a file/directory type conflict instead of collecting it.
     strict: bool,
+    /// Side that resolves control files (`.gitignore`) when both differ.
+    preference: Preference,
+    /// The target root was absent when the pass started. A vanished root is an
+    /// environment event, not a per-file deletion, so a source deletion that a
+    /// baseline would otherwise infer is restored instead.
+    restore_only: bool,
+}
+
+impl Default for PlanOptions {
+    /// Fail closed: strict conflict handling and modification-time resolution.
+    fn default() -> Self {
+        Self::sync(false)
+    }
+}
+
+impl PlanOptions {
+    fn sync(restore_only: bool) -> Self {
+        Self {
+            strict: true,
+            preference: Preference::Newest,
+            restore_only,
+        }
+    }
+
+    fn audit(preference: Preference) -> Self {
+        Self {
+            strict: false,
+            preference,
+            restore_only: false,
+        }
+    }
 }
 
 fn describe_kind(kind: Option<Kind>) -> &'static str {
@@ -216,13 +269,17 @@ fn operation(
     roots: &Roots,
     relative: &Path,
     previous: &BTreeMap<String, StoredFileState>,
+    options: PlanOptions,
 ) -> Result<Operation> {
     let local = read_meta(&roots.local, roots.local_rel(relative))?;
     let cloud = read_meta(&roots.cloud, roots.cloud_rel(relative))?;
-    let decision = decide(
-        local.as_ref(),
-        cloud.as_ref(),
-        previous.get(&key(relative)?),
+    let decision = restore_guard(
+        decide(
+            local.as_ref(),
+            cloud.as_ref(),
+            previous.get(&key(relative)?),
+        ),
+        options.restore_only,
     );
     Ok(Operation {
         relative: relative.to_path_buf(),
@@ -233,21 +290,18 @@ fn operation(
 }
 
 impl Plan {
-    fn build(roots: &Roots, previous: &BTreeMap<String, StoredFileState>) -> Result<Self> {
-        Self::build_with(roots, previous, true)
-    }
-
-    fn build_with(
+    fn build(
         roots: &Roots,
         previous: &BTreeMap<String, StoredFileState>,
-        strict: bool,
+        options: PlanOptions,
     ) -> Result<Self> {
         let mut plan = Self {
-            strict,
+            options,
             ..Self::default()
         };
         if roots.local_file.is_some() {
-            plan.files.push(operation(roots, Path::new(""), previous)?);
+            plan.files
+                .push(operation(roots, Path::new(""), previous, options)?);
             return Ok(plan);
         }
         plan.visit(roots, Path::new(""), previous)?;
@@ -260,7 +314,7 @@ impl Plan {
             } else if !plan.observed.contains(relative) && !plan.opaque_path(Path::new(relative)) {
                 // Do not infer deletion through a symlink or an unexpected file type.
                 let rel = Path::new(relative);
-                plan.files.push(operation(roots, rel, previous)?);
+                plan.files.push(operation(roots, rel, previous, options)?);
             }
         }
         Ok(plan)
@@ -273,14 +327,15 @@ impl Plan {
         previous: &BTreeMap<String, StoredFileState>,
     ) -> Result<()> {
         let control = directory.join(".gitignore");
-        let op = operation(roots, &control, previous).map_err(|error| {
+        let stored = key(&control)?;
+        let op = operation(roots, &control, previous, self.options).map_err(|error| {
             std::io::Error::other(format!(
                 "cannot resolve control {}: {error}",
                 control.display()
             ))
         })?;
-        self.observed.insert(key(&control)?);
-        let chosen = match op.decision {
+        self.observed.insert(stored.clone());
+        let chosen = match resolve(self.options.preference, &op, previous.get(&stored)) {
             Decision::Noop | Decision::CopyLocalToCloud => {
                 op.local.as_ref().map(|m| (&roots.local, m))
             }
@@ -324,7 +379,7 @@ impl Plan {
                 }
                 self.forget.insert(key(&rel)?);
             } else if local.is_some() && cloud.is_some() && local != cloud {
-                if self.strict {
+                if self.options.strict {
                     return Err(std::io::Error::other(format!(
                         "source/target type conflict: {}",
                         rel.display()
@@ -347,7 +402,8 @@ impl Plan {
                 self.visit(roots, &rel, previous)?;
             } else if local == Some(Kind::File) || cloud == Some(Kind::File) {
                 self.observed.insert(key(&rel)?);
-                self.files.push(operation(roots, &rel, previous)?);
+                self.files
+                    .push(operation(roots, &rel, previous, self.options)?);
             } else {
                 // Unsupported filesystem entries are never followed or synchronized.
                 self.observed.insert(key(&rel)?);
@@ -519,7 +575,9 @@ fn run_sync(db: &StateDb, item: &Item, initial: bool) -> Result<SyncSummary> {
         return Err(LinkerError::PathMissing(item.local_path.clone().into()));
     }
     let cloud = Path::new(&item.cloud_path);
-    if !initial && !cloud.exists() {
+    // A missing target root is recreated for an existing association.
+    let target_was_missing = !initial && !cloud.exists();
+    if !initial && target_was_missing {
         fs::create_dir_all(if item.item_type == "file" {
             cloud.parent().unwrap()
         } else {
@@ -530,7 +588,16 @@ fn run_sync(db: &StateDb, item: &Item, initial: bool) -> Result<SyncSummary> {
     if initial && !roots.cloud.entries(Path::new(""))?.is_empty() {
         return Err(LinkerError::TargetNotEmpty(cloud.into()));
     }
-    let plan = Plan::build(&roots, &previous(db, item)?)?;
+    // A target root that is entirely gone while the baselines still record
+    // target content is an environment event, not the per-file deletion this
+    // model propagates: every target file is missing at once, and treating that
+    // as a removal would delete the whole source tree. Restore from the source
+    // and report it. An existing root still uses ordinary per-file semantics;
+    // `linker repair` refills a root that was emptied in place.
+    let previous = previous(db, item)?;
+    let target_root_recovered =
+        !initial && target_was_missing && previous.values().any(|state| state.cloud_hash.is_some());
+    let plan = Plan::build(&roots, &previous, PlanOptions::sync(target_root_recovered))?;
     plan.verify_controls(&roots)?;
     if initial
         && (!roots.cloud.entries(Path::new(""))?.is_empty()
@@ -555,6 +622,7 @@ fn run_sync(db: &StateDb, item: &Item, initial: bool) -> Result<SyncSummary> {
         unchanged: 0,
         warnings: plan.warnings.clone(),
         rules_fingerprint: plan.fingerprint(),
+        target_root_recovered,
     };
     // Retire baselines BEFORE pruning. A partial failure must never turn cleanup
     // into a user deletion that propagates back to the source after a rule edit.
@@ -602,8 +670,9 @@ pub fn preview_item(db: &StateDb, item: &Item) -> Result<SyncPreview> {
     let _lock = db.lock_item(&item.id)?;
     let item = db.get_item(&item.id)?;
     let _source_lock = db.lock_source(&item.local_path)?;
+    let plan = previous(db, &item)?;
     let roots = Roots::open(&item)?;
-    let plan = Plan::build(&roots, &previous(db, &item)?)?;
+    let plan = Plan::build(&roots, &plan, PlanOptions::sync(false))?;
     plan.verify_controls(&roots)?;
     let mut operations = Vec::new();
     for op in plan.controls.iter().chain(&plan.files) {
@@ -756,10 +825,12 @@ struct Analysis {
     previous: BTreeMap<String, StoredFileState>,
 }
 
-fn analyze(db: &StateDb, item: &Item, strict: bool) -> Result<Analysis> {
+fn analyze(db: &StateDb, item: &Item, preference: Preference) -> Result<Analysis> {
     let roots = Roots::open(item)?;
     let previous = previous(db, item)?;
-    let plan = Plan::build_with(&roots, &previous, strict)?;
+    // Audits collect type conflicts instead of aborting, and resolve control
+    // files by the requested side so rules and content decisions agree.
+    let plan = Plan::build(&roots, &previous, PlanOptions::audit(preference))?;
     plan.verify_controls(&roots)?;
     Ok(Analysis {
         roots,
@@ -768,11 +839,21 @@ fn analyze(db: &StateDb, item: &Item, strict: bool) -> Result<Analysis> {
     })
 }
 
+/// Both roots must exist for an audit or a manual repair. An ordinary sync
+/// recreates a missing target root; a retained single-file association keeps
+/// its target file optional because an absent file is ordinary content.
 fn require_existing_roots(item: &Item) -> Result<()> {
-    for path in [&item.local_path, &item.cloud_path] {
-        if !Path::new(path).exists() {
-            return Err(LinkerError::PathMissing(path.clone().into()));
-        }
+    if !Path::new(&item.local_path).exists() {
+        return Err(LinkerError::PathMissing(item.local_path.clone().into()));
+    }
+    let target = Path::new(&item.cloud_path);
+    let required = if item.item_type == "file" {
+        target.parent().unwrap_or(target)
+    } else {
+        target
+    };
+    if !required.exists() {
+        return Err(LinkerError::PathMissing(required.to_path_buf()));
     }
     Ok(())
 }
@@ -811,7 +892,7 @@ pub fn check_item(db: &StateDb, item: &Item) -> Result<CheckReport> {
     let item = db.get_item(&item.id)?;
     let _source_lock = db.lock_source(&item.local_path)?;
     require_existing_roots(&item)?;
-    let analysis = analyze(db, &item, false)?;
+    let analysis = analyze(db, &item, Preference::Newest)?;
     let mut report = CheckReport {
         item_name: item.name.clone(),
         source_path: item.local_path.clone(),
@@ -1014,6 +1095,7 @@ impl<'a> RepairPass<'a> {
             unchanged: 0,
             warnings: Vec::new(),
             rules_fingerprint: plan.fingerprint(),
+            target_root_recovered: false,
         };
         Self {
             db,
@@ -1071,7 +1153,11 @@ impl<'a> RepairPass<'a> {
         let item = self.item;
         let roots = self.scope.roots;
         let stored = key(&op.relative)?;
-        let decision = resolve(self.preference, op, self.scope.previous.get(&stored));
+        let prev = self.scope.previous.get(&stored);
+        let decision = resolve(self.preference, op, prev);
+        // Whether ordinary sync reaches the same decision decides how a removal
+        // is explained: a recorded deletion versus authority alone.
+        let baseline_backed = decision == decide(op.local.as_ref(), op.cloud.as_ref(), prev);
         let source_path = roots.local.path.join(roots.local_rel(&op.relative));
         let target_path = roots.cloud.path.join(roots.cloud_rel(&op.relative));
         match decision {
@@ -1121,13 +1207,17 @@ impl<'a> RepairPass<'a> {
                 } else {
                     target_path
                 };
+                let evidence = if baseline_backed {
+                    "the other side deleted its copy after the last sync"
+                } else {
+                    "the authoritative side never recorded this path"
+                };
                 if !self.prune {
                     self.report.skipped.push(RepairAction {
                         action: action.into(),
                         side: if delete_source { "source" } else { "target" }.into(),
                         path,
-                        note: "the winning side has no such path; rerun with --prune to remove it"
-                            .into(),
+                        note: format!("{evidence}; rerun with --prune to remove it"),
                     });
                     return Ok(());
                 }
@@ -1135,7 +1225,7 @@ impl<'a> RepairPass<'a> {
                     action: action.into(),
                     side: if delete_source { "source" } else { "target" }.into(),
                     path,
-                    note: "removed because the winning side has no such path".into(),
+                    note: format!("removed: {evidence}"),
                 });
                 if !self.dry_run {
                     let resolved = resolved_operation(op, decision);
@@ -1158,6 +1248,7 @@ impl<'a> RepairPass<'a> {
         }
         let (db, item, roots, previous) =
             (self.db, self.item, self.scope.roots, self.scope.previous);
+        let options = self.scope.plan.options;
         let source_wins = self.preference == Preference::Source;
         let winner_side = if source_wins { "source" } else { "target" };
         let loser_side = if source_wins { "target" } else { "source" };
@@ -1208,7 +1299,7 @@ impl<'a> RepairPass<'a> {
         }
         loser.remove_recursive(relative)?;
         for file in files {
-            let op = operation(roots, &file, previous)?;
+            let op = operation(roots, &file, previous, options)?;
             let decision = if source_wins {
                 Decision::CopyLocalToCloud
             } else {
@@ -1299,7 +1390,7 @@ fn run_repair(
     dry_run: bool,
 ) -> Result<RepairReport> {
     require_existing_roots(item)?;
-    let analysis = analyze(db, item, false)?;
+    let analysis = analyze(db, item, preference)?;
     RepairPass::new(
         db,
         item,
@@ -1313,4 +1404,158 @@ fn run_repair(
         dry_run,
     )
     .run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(hash: &str, mtime: i64) -> FileMeta {
+        FileMeta {
+            hash: hash.into(),
+            size: 1,
+            mtime,
+        }
+    }
+
+    fn op(local: Option<FileMeta>, cloud: Option<FileMeta>) -> Operation {
+        Operation {
+            relative: PathBuf::from("file.txt"),
+            local,
+            cloud,
+            decision: Decision::Noop,
+        }
+    }
+
+    /// A baseline that still matches a local copy of `local`, with the cloud
+    /// copy recorded and gone.
+    fn recorded_deletion(local: &FileMeta) -> StoredFileState {
+        StoredFileState {
+            relative_path: "file.txt".into(),
+            local_hash: Some(local.hash.clone()),
+            local_mtime: Some(local.mtime),
+            local_size: Some(local.size),
+            cloud_hash: Some("cloud".into()),
+            cloud_mtime: Some(local.mtime),
+            cloud_size: Some(local.size),
+            last_synced_hash: Some(local.hash.clone()),
+            deleted: false,
+        }
+    }
+
+    #[test]
+    fn a_fixed_side_overrides_the_modification_time_rule() {
+        let local = meta("local", 10);
+        let cloud = meta("cloud", 20);
+        let differing = op(Some(local.clone()), Some(cloud.clone()));
+        assert_eq!(
+            resolve(Preference::Source, &differing, None),
+            Decision::CopyLocalToCloud
+        );
+        assert_eq!(
+            resolve(Preference::Target, &differing, None),
+            Decision::CopyCloudToLocal
+        );
+        assert_eq!(
+            resolve(Preference::Newest, &differing, None),
+            Decision::CopyCloudToLocal
+        );
+        assert_eq!(
+            resolve(
+                Preference::Newest,
+                &op(Some(meta("local", 30)), Some(cloud)),
+                None
+            ),
+            Decision::CopyLocalToCloud
+        );
+        assert_eq!(
+            resolve(
+                Preference::Source,
+                &op(Some(local.clone()), Some(local.clone())),
+                None
+            ),
+            Decision::Noop
+        );
+    }
+
+    #[test]
+    fn a_fixed_side_decides_one_sided_paths_without_a_baseline() {
+        let local = meta("local", 10);
+        let cloud = meta("cloud", 10);
+        let source_only = op(Some(local.clone()), None);
+        assert_eq!(
+            resolve(Preference::Source, &source_only, None),
+            Decision::CopyLocalToCloud
+        );
+        assert_eq!(
+            resolve(Preference::Target, &source_only, None),
+            Decision::DeleteLocal
+        );
+        assert_eq!(
+            resolve(Preference::Newest, &source_only, None),
+            Decision::CopyLocalToCloud
+        );
+        let target_only = op(None, Some(cloud.clone()));
+        assert_eq!(
+            resolve(Preference::Source, &target_only, None),
+            Decision::DeleteCloud
+        );
+        assert_eq!(
+            resolve(Preference::Target, &target_only, None),
+            Decision::CopyCloudToLocal
+        );
+    }
+
+    #[test]
+    fn a_recorded_deletion_still_propagates_under_the_newest_rule() {
+        let local = meta("local", 10);
+        let previous = recorded_deletion(&local);
+        assert_eq!(
+            resolve(
+                Preference::Newest,
+                &op(Some(local.clone()), None),
+                Some(&previous)
+            ),
+            Decision::DeleteLocal
+        );
+        // The source wins before any baseline is consulted.
+        assert_eq!(
+            resolve(
+                Preference::Source,
+                &op(Some(local.clone()), None),
+                Some(&previous)
+            ),
+            Decision::CopyLocalToCloud
+        );
+        // A changed surviving copy is restored, not deleted.
+        assert_eq!(
+            resolve(
+                Preference::Newest,
+                &op(Some(meta("edited", 99)), None),
+                Some(&previous)
+            ),
+            Decision::CopyLocalToCloud
+        );
+    }
+
+    #[test]
+    fn only_a_vanished_target_root_turns_a_deletion_into_a_restore() {
+        assert_eq!(
+            restore_guard(Decision::DeleteLocal, true),
+            Decision::CopyLocalToCloud
+        );
+        assert_eq!(
+            restore_guard(Decision::DeleteLocal, false),
+            Decision::DeleteLocal
+        );
+        assert_eq!(
+            restore_guard(Decision::DeleteCloud, true),
+            Decision::DeleteCloud
+        );
+        assert_eq!(
+            restore_guard(Decision::CopyCloudToLocal, true),
+            Decision::CopyCloudToLocal
+        );
+        assert_eq!(restore_guard(Decision::Noop, true), Decision::Noop);
+    }
 }

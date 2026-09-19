@@ -193,14 +193,15 @@ impl Daemon {
                             .insert(item_id.to_owned(), summary.rules_fingerprint.clone());
                     }
                     eprintln!(
-                        "linkerd {reason} synced {}: source->target={}, target->source={}, deleted_source={}, deleted_target={}, pruned_target_directories={}, unchanged={}",
+                        "linkerd {reason} synced {}: source->target={}, target->source={}, deleted_source={}, deleted_target={}, pruned_target_directories={}, unchanged={}, target_root_recovered={}",
                         summary.item_name,
                         summary.copied_local_to_cloud,
                         summary.copied_cloud_to_local,
                         summary.deleted_local,
                         summary.deleted_cloud,
                         summary.pruned_cloud_directories,
-                        summary.unchanged
+                        summary.unchanged,
+                        summary.target_root_recovered
                     );
                 }
             }

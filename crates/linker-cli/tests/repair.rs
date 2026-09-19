@@ -6,6 +6,7 @@ use std::time::UNIX_EPOCH;
 use assert_cmd::prelude::*;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
+use rusqlite::Connection;
 
 struct Fixture {
     tmp: tempfile::TempDir,
@@ -396,4 +397,183 @@ fn check_and_repair_require_existing_roots_and_known_items() {
         .assert()
         .failure()
         .stderr(contains("item was not found"));
+}
+
+#[test]
+fn check_reports_advisories_without_failing() {
+    let f = Fixture::new();
+    let source = f.source("source");
+    let target = f.path("target");
+    f.add(&source, &target, None).assert().success();
+
+    std::os::unix::fs::symlink(f.path("absent"), source.join("link")).unwrap();
+    f.cli()
+        .arg("check")
+        .assert()
+        .success()
+        .stdout(contains("unsupported_entry"))
+        .stdout(contains("divergent: 0"))
+        .stdout(contains("advisory: 1"));
+}
+
+#[test]
+fn repair_is_idempotent_and_reports_a_converged_pair() {
+    let f = Fixture::new();
+    let source = f.source("source");
+    let target = f.path("target");
+    f.add(&source, &target, None).assert().success();
+    fs::write(source.join("copied.txt"), "from source").unwrap();
+
+    f.cli()
+        .arg("repair")
+        .assert()
+        .success()
+        .stdout(contains("write_target"))
+        .stdout(contains("applied: 1"));
+    f.cli()
+        .arg("repair")
+        .assert()
+        .success()
+        .stdout(contains("consistent"))
+        .stdout(contains("applied: 0"));
+    f.cli().args(["check", "source"]).assert().success();
+}
+
+#[test]
+fn repairing_one_target_leaves_the_shared_source_and_other_target_untouched() {
+    let f = Fixture::new();
+    let source = f.source("source");
+    let first = f.path("first");
+    let second = f.path("second");
+    f.add(&source, &first, Some("one")).assert().success();
+    f.add(&source, &second, Some("two")).assert().success();
+
+    fs::write(source.join("differ.txt"), "source version").unwrap();
+    fs::write(first.join("differ.txt"), "first version").unwrap();
+    fs::write(second.join("differ.txt"), "second version").unwrap();
+
+    f.cli().args(["repair", "one"]).assert().success();
+
+    assert_eq!(
+        fs::read_to_string(first.join("differ.txt")).unwrap(),
+        "source version"
+    );
+    assert_eq!(
+        fs::read_to_string(second.join("differ.txt")).unwrap(),
+        "second version"
+    );
+    assert_eq!(
+        fs::read_to_string(source.join("differ.txt")).unwrap(),
+        "source version"
+    );
+}
+
+#[test]
+fn repair_follows_the_authoritative_sides_ignore_rules() {
+    let f = Fixture::new();
+    let source = f.source("source");
+    let target = f.path("target");
+    f.add(&source, &target, None).assert().success();
+    fs::write(source.join("notes.md"), "source note").unwrap();
+    f.cli().arg("sync").assert().success();
+    assert!(target.join("notes.md").exists());
+
+    // The source now ignores notes.md with a newer control file while the
+    // target's control file stays empty and older, and the target's copy of
+    // notes.md is gone. The chosen side must decide the rules: with the target
+    // authoritative, notes.md is ordinary content the target does not have.
+    fs::write(source.join(".gitignore"), "notes.md\n").unwrap();
+    fs::write(target.join(".gitignore"), "").unwrap();
+    f.set_mtime(&source.join(".gitignore"), 1_700_000_000);
+    f.set_mtime(&target.join(".gitignore"), 1_600_000_000);
+    fs::remove_file(target.join("notes.md")).unwrap();
+
+    f.cli()
+        .args(["repair", "--prefer", "target", "--prune"])
+        .assert()
+        .success()
+        .stdout(contains("write_source"));
+
+    assert_eq!(fs::read_to_string(source.join(".gitignore")).unwrap(), "");
+    assert!(!target.join("notes.md").exists());
+    assert!(!source.join("notes.md").exists());
+    assert_eq!(
+        fs::read_to_string(target.join("keep.txt")).unwrap(),
+        "source"
+    );
+}
+
+#[test]
+fn repair_reports_whether_a_removal_follows_a_recorded_deletion() {
+    let f = Fixture::new();
+    let source = f.source("source");
+    let target = f.path("target");
+    f.add(&source, &target, None).assert().success();
+
+    // Recorded deletion: the target copy existed at the last sync and is gone.
+    fs::remove_file(target.join("keep.txt")).unwrap();
+    // Never recorded: a file only the source has ever had.
+    fs::write(source.join("fresh.txt"), "fresh").unwrap();
+
+    f.cli()
+        .args(["repair", "--prefer", "target"])
+        .assert()
+        .success()
+        .stdout(contains(
+            "the other side deleted its copy after the last sync",
+        ))
+        .stdout(contains("the authoritative side never recorded this path"));
+
+    assert!(source.join("keep.txt").exists());
+    assert!(source.join("fresh.txt").exists());
+}
+
+#[test]
+fn check_and_repair_handle_a_retained_single_file_association() {
+    let f = Fixture::new();
+    let source = f.source("single");
+    let source_file = source.join("note.txt");
+    fs::write(&source_file, "source note").unwrap();
+    let target = f.path("target");
+    f.add(&source, &target, Some("pair")).assert().success();
+
+    // Convert the stored pair into the retained single-file form.
+    let target_dir = f.path("pair-target");
+    fs::create_dir(&target_dir).unwrap();
+    let target_file = target_dir.join("note.txt");
+    let conn = Connection::open(f.state.join("state.sqlite")).unwrap();
+    conn.execute("DELETE FROM file_states", []).unwrap();
+    conn.execute(
+        "UPDATE items SET item_type = 'file', local_path = ?1, cloud_path = ?2 WHERE name = 'pair'",
+        rusqlite::params![source_file.to_str().unwrap(), target_file.to_str().unwrap()],
+    )
+    .unwrap();
+    drop(conn);
+
+    // An absent target file is ordinary content to restore, not a missing root.
+    f.cli()
+        .args(["check", "pair"])
+        .assert()
+        .failure()
+        .stdout(contains("source_only"));
+
+    f.cli().args(["repair", "pair"]).assert().success();
+    assert_eq!(fs::read_to_string(&target_file).unwrap(), "source note");
+    f.cli()
+        .args(["check", "pair"])
+        .assert()
+        .success()
+        .stdout(contains("consistent"));
+
+    fs::write(&target_file, "target note").unwrap();
+    f.cli()
+        .args(["check", "pair"])
+        .assert()
+        .failure()
+        .stdout(contains("content_differs"));
+    f.cli()
+        .args(["repair", "pair", "--prefer", "target"])
+        .assert()
+        .success();
+    assert_eq!(fs::read_to_string(&source_file).unwrap(), "target note");
 }

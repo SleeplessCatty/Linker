@@ -91,6 +91,8 @@ change detected
 
 The user should normally not need to run manual sync.
 
+A target directory that disappears is restored from the source on the next pass instead of being read as a deletion of every file, so a moved, unmounted or lost target folder cannot empty the source directory. An existing target directory keeps per-file deletion behavior; `linker check` lists the source files such a sync would delete and `linker repair` refills the target without deleting anything.
+
 ### Inspect and Preview
 
 `linker list` presents one table with complete source/target paths, status, last successful sync time in UTC, and errors. `linker sync [name] --dry-run` previews the same control and data operations without applying them or changing sync state. It does not pause the daemon or reserve the plan for later execution.

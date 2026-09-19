@@ -124,6 +124,7 @@ Must have:
 - table-formatted association list and daemon health checks
 - dry-run preview for existing associations
 - read-only consistency audit and manual repair with an explicit authoritative side
+- recovery of a missing target root from the source instead of propagating deletions
 
 Deferred:
 

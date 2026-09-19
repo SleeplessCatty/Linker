@@ -68,7 +68,7 @@ impl StateDb {
             directory: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
         };
         if !db.column_exists("items", "id")? || db.column_exists("items", "rule_path")? {
-            return Err(std::io::Error::other("dry-run requires upgraded Linker state; back up and complete the schema-2 upgrade first (see INSTALL.md)").into());
+            return Err(std::io::Error::other("this command requires upgraded Linker state; back up and complete the schema-2 upgrade first (see INSTALL.md)").into());
         }
         Ok(db)
     }

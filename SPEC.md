@@ -183,6 +183,8 @@ For each item:
 
 Relative paths are normal paths inside the associated directory. `tree.rs` pins root/parent directory descriptors, uses no-follow relative opens and unlink operations, and atomically renames copied files. Symlink data files are not synchronized; an ignored target symlink itself can be removed without following it. Directory/control type conflicts and I/O errors are surfaced, not treated as missing rules. Cleanup summaries count successful file/link removals separately from directory removals.
 
+A target root that is absent at the start of an existing association's pass is recreated; when the baselines still record target content, that pass restores from the source instead of reading every path as a target-side deletion. The summary reports `target_root_recovered`, the CLI warns, and the daemon logs the flag, so an unmounted, moved or lost target root cannot delete the whole source tree. An existing target root keeps ordinary per-file semantics, including that removing its last file propagates; `check` names those paths before a sync runs and `repair` can refill the target without deleting source content.
+
 ## Dry-Run Contract
 
 `StateDb::open_read_only` refuses uninitialized/legacy schemas instead of migrating them. `preview_item` takes the same item lock as sync, reloads the association after acquiring it, builds and verifies the control plan, and returns an operation inventory. It does not retire baselines, apply controls, delete files, update item status, or create missing roots. Lock files may be created. Both roots must already exist.
@@ -204,9 +206,11 @@ CLI renders absolute action/path pairs, warnings on stderr, and `no changes` for
 | `ignored_target_content` | Target content matched by an effective `.gitignore` rule; the source copy is kept and target cleanup removes this one. | no |
 | `unsupported_entry` | A symbolic link or another special file; never followed or synchronized. | no |
 
-The exit status is 1 when any blocking class is present, so the command can gate scripting. The audit itself writes nothing: only synchronization lock files may be created, and `StateDb::open_read_only` refuses uninitialized or legacy state instead of migrating it. A missing root is an error, never a silently created directory.
+The exit status is 1 when any blocking class is present, so the command can gate scripting. An association whose only differences are `ignored_target_content` or `unsupported_entry` reports `consistent` with advisories and exits 0. The audit itself writes nothing: only synchronization lock files may be created, and `StateDb::open_read_only` refuses uninitialized or legacy state instead of migrating it. A missing root is an error, never a silently created directory.
 
 `linker repair [name] --prefer source|target|newest [--prune] [--dry-run]` makes every diverging non-ignored path match the authoritative side. `source` is the default. `newest` reproduces ordinary sync, including baseline-driven deletion propagation. Applied copies use the same `apply` path as sync, so `file_states` baselines are updated for each repaired path and a later daemon pass sees a converged association instead of reverting the repair.
+
+The chosen side also resolves conflicting `.gitignore` control files, so the rules that drive a pass and the content it writes always come from the same side instead of mixing one side's rules with the other side's content. Removal rows state whether the baselines recorded the other side's copy, separating a deletion to propagate from a path the authoritative side never had. Retained single-file associations keep their target file optional: an absent file is ordinary content to restore, while a missing parent directory is a missing root.
 
 Without `--prune` the command only adds and overwrites. A path the authoritative side does not have, ignored target content and the losing side of a type conflict are reported with their reason and skipped. `--prune` is the only option that can delete data: it removes those paths, and replacing a type conflict uses recursive no-follow removal, so a swapped target root or ancestor symlink cannot redirect the deletion into the source. Ignored baselines are retired before any pruned cleanup, as in ordinary sync.
 

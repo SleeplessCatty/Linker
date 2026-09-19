@@ -86,7 +86,7 @@ enum Command {
     Doctor,
     #[command(about = "Run one manual sync pass")]
     #[command(
-        long_about = "Run one manual sync pass for all items or one named item. Use --dry-run to preview effective control-file, copy, deletion and ignore-cleanup operations without applying them or updating sync state. Preview requires upgraded metadata and existing roots; it may create synchronization lock files. A running daemon can still sync independently. Normal usage should rely on linkerd automatic syncing."
+        long_about = "Run one manual sync pass for all items or one named item. Use --dry-run to preview effective control-file, copy, deletion and ignore-cleanup operations without applying them or updating sync state. Preview requires upgraded metadata and existing roots; it may create synchronization lock files. A running daemon can still sync independently. Normal usage should rely on linkerd automatic syncing. A target root that is missing is recreated and restored from the source in that pass, and such a pass never propagates target-side deletions."
     )]
     Sync {
         #[arg(help = "Optional item name or internal item id")]
@@ -271,6 +271,12 @@ fn run() -> Result<()> {
                     summary.pruned_cloud_directories
                 );
                 println!("unchanged: {}", summary.unchanged);
+                if summary.target_root_recovered {
+                    eprintln!(
+                        "warning: the target root was missing; restored {} file(s) from the source instead of propagating deletions",
+                        summary.copied_local_to_cloud
+                    );
+                }
             }
         }
         Command::Check { name } => {
@@ -415,7 +421,7 @@ fn format_error(error: &LinkerError) -> String {
             "error: item was not found: {name}\nhelp: run `linker list` to see configured items."
         ),
         LinkerError::PathMissing(path) => format!(
-            "error: path does not exist: {}\nhelp: check the path and try again.",
+            "error: path does not exist: {}\nhelp: check the path and try again. `linker sync` recreates a missing or empty target root from the source; `check` and `repair` require both roots.",
             path.display()
         ),
         LinkerError::NotDirectory(path) => format!(

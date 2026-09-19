@@ -73,6 +73,28 @@ fn daemon_help_uses_linkerd_name() {
 }
 
 #[test]
+fn daemon_once_restores_a_vanished_target_root_instead_of_deleting_source_files() {
+    let sandbox = Sandbox::new();
+    write_file(&sandbox.source.join("initial.txt"), "initial");
+    seed(&sandbox);
+
+    fs::remove_dir_all(sandbox.item_dir()).unwrap();
+
+    sandbox
+        .linkerd()
+        .arg("--once")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("target_root_recovered=true"));
+
+    assert_eq!(read_file(&sandbox.source.join("initial.txt")), "initial");
+    assert_eq!(
+        read_file(&sandbox.item_dir().join("initial.txt")),
+        "initial"
+    );
+}
+
+#[test]
 fn daemon_once_syncs_existing_item() {
     let sandbox = Sandbox::new();
     write_file(&sandbox.source.join("initial.txt"), "initial");

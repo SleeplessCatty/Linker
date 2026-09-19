@@ -582,14 +582,22 @@ stop_launchagent() {
     return 1
   fi
 
-  if output="$(launchctl print "${service_target}" 2>&1)"; then
-    legacy_cleanup_error "LaunchAgent ${label} is still running"
-    return 1
-  fi
-  if ! launchctl_reports_missing_service "${output}"; then
-    legacy_cleanup_error "could not verify LaunchAgent stopped for ${label}: ${output}"
-    return 1
-  fi
+  # launchd unloads a booted-out job asynchronously, so give it a moment before
+  # declaring the stop failed. install.sh aborts on this error before it
+  # bootstraps the new agent, which would leave the daemon down.
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if output="$(launchctl print "${service_target}" 2>&1)"; then
+      [[ "${attempt}" == "10" ]] || sleep 0.5
+    elif launchctl_reports_missing_service "${output}"; then
+      return 0
+    else
+      legacy_cleanup_error "could not verify LaunchAgent stopped for ${label}: ${output}"
+      return 1
+    fi
+  done
+  legacy_cleanup_error "LaunchAgent ${label} is still running"
+  return 1
 }
 
 wait_for_linker_daemon() {

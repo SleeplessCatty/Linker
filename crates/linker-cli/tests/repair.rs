@@ -400,6 +400,40 @@ fn check_and_repair_require_existing_roots_and_known_items() {
 }
 
 #[test]
+fn check_and_repair_honor_the_global_ignore_file() {
+    let f = Fixture::new();
+    let source = f.source("source");
+    let target = f.path("target");
+    f.add(&source, &target, None).assert().success();
+
+    // One Linker-level rule excludes Finder metadata from every association.
+    fs::write(f.state.join("global.gitignore"), ".DS_Store\n").unwrap();
+    fs::write(source.join(".DS_Store"), "source finder").unwrap();
+    fs::write(target.join(".DS_Store"), "target finder").unwrap();
+
+    f.cli()
+        .args(["check", "source"])
+        .assert()
+        .success()
+        .stdout(contains("ignored_target_content"))
+        .stdout(contains("advisory: 1"))
+        .stdout(contains("matches .gitignore"));
+
+    f.cli()
+        .args(["repair", "--prune"])
+        .assert()
+        .success()
+        .stdout(contains("prune_target_file"));
+
+    assert!(!target.join(".DS_Store").exists());
+    assert_eq!(
+        fs::read_to_string(source.join(".DS_Store")).unwrap(),
+        "source finder"
+    );
+    f.cli().args(["check", "source"]).assert().success();
+}
+
+#[test]
 fn check_reports_advisories_without_failing() {
     let f = Fixture::new();
     let source = f.source("source");

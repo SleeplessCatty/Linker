@@ -114,6 +114,38 @@ pub fn doctor_report() -> DoctorReport {
         )),
     }
 
+    match paths::app_global_ignore_path() {
+        Ok(path) => match fs::read_to_string(&path) {
+            Ok(contents) => {
+                let rules = contents
+                    .lines()
+                    .filter(|line| {
+                        let pattern = line.trim();
+                        !pattern.is_empty() && !pattern.starts_with('#')
+                    })
+                    .count();
+                checks.push(ok(
+                    "Global Ignore",
+                    format!("{rules} rule line(s) at {}", path.display()),
+                ));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => checks.push(ok(
+                "Global Ignore",
+                format!("not configured at {} (optional)", path.display()),
+            )),
+            Err(err) => checks.push(warn(
+                "Global Ignore",
+                format!("unreadable at {}: {err}", path.display()),
+                "Fix the permissions or remove the file; every sync reads it.",
+            )),
+        },
+        Err(err) => checks.push(warn(
+            "Global Ignore",
+            err.to_string(),
+            "Check Linker Application Support.",
+        )),
+    }
+
     let daemon = daemon_health();
     match (&daemon.binary_path, daemon.installed, daemon.running) {
         (Some(path), true, true) => checks.push(ok(

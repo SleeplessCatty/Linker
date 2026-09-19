@@ -94,6 +94,24 @@ If `learn` already exists, run only the second command. Inside double quotes, sp
 
 Only `.gitignore` files inside the association control ignores. Edit them on either side, then let the daemon sync or run `linker sync <name>`. No Git repository is required. With no applicable rules, nothing is excluded.
 
+### Global ignore file
+
+One optional Linker-level file applies to every association:
+
+```text
+~/Library/Application Support/Linker/global.gitignore
+```
+
+It uses exactly the same pattern subset, comments and warnings as an in-tree `.gitignore`, but its rules are read as if they lived at the root of each association, are additive with the in-tree controls, and are never synchronized into any tree. A missing file means no global rules; restart is not required, because every pass and every audit reads it (a running daemon picks up an edit at its next sync, at latest with the 5-minute reconciliation).
+
+```bash
+printf '.DS_Store\n' >> ~/Library/Application\ Support/Linker/global.gitignore
+```
+
+That single line stops Finder metadata from being synchronized: the source copies stay in place and matching target copies are removed, exactly like an ignored file inside the tree. Delete the line (or the file) to restore normal sync. Linker never rewrites this file.
+
+Use it for machine-wide or cross-association entries such as `.DS_Store`, `*.tmp`, or a build directory that appears in several sources. An unreadable global file fails closed: the association's pass aborts before any change, and `linker doctor` reports it.
+
 This is **Linker's basic subset**, not full Git compatibility:
 
 | Pattern | Meaning |
@@ -112,7 +130,7 @@ Rules in active root and child directories accumulate: any match excludes the pa
 ### Sync and safety
 
 - Ignored source files remain in place and their contents are not read. Matching target copies are deleted, including target-only files and complete ignored directories.
-- Active `.gitignore` files are control files and sync even when a pattern matches their name. Controls inside ignored directories are not exempt.
+- Active `.gitignore` files are control files and sync even when a pattern matches their name. Controls inside ignored directories are not exempt. The optional global ignore file is a rule source, not association content, so it is never synchronized.
 - Each pass resolves control files first using the newer modification time, preferring the source on ties, then applies those effective rules in the same pass. Normal baseline-based deletion also applies to control files.
 - Editing or deleting controls causes reevaluation next pass. Removing an ignore restores normal sync; prior target cleanup is not propagated as a source deletion.
 - Unreadable controls and control-file type conflicts abort that association's pass before changes. Unsupported syntax only warns. Each invalid line warns once per pass; the daemon does not repeat unchanged rule-content warnings until content changes or it restarts.

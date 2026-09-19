@@ -5,7 +5,7 @@ Linker is a lightweight macOS directory sync tool.
 Version 0.3.0 focuses on three practical needs:
 
 1. Link a source directory to a exact target directory and keep it synced.
-2. Manage ignores through in-tree `.gitignore` files.
+2. Manage ignores through in-tree `.gitignore` files, with one optional global ignore file for rules that apply to every association.
 3. Resolve changes automatically by using the latest modified file.
 
 There is no global Linker workspace. Add a directory by passing both sides:
@@ -119,6 +119,7 @@ Must have:
 - automatic two-way sync
 - simplified `.gitignore` rules (names, directories, relative paths, single `*`)
 - nested additive rules; ignored source files retained and target copies removed
+- one optional global ignore file applied to every association, additive with in-tree rules
 - invalid advanced patterns warned and skipped; not full Git compatibility
 - latest-modified-wins conflict behavior
 - table-formatted association list and daemon health checks

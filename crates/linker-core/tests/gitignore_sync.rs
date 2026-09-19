@@ -43,6 +43,9 @@ impl Fixture {
     fn sync(&self) -> SyncSummary {
         sync_item(&self.db, &self.item).unwrap()
     }
+    fn global_ignore(&self) -> PathBuf {
+        self.db.global_ignore_path()
+    }
 }
 fn write(path: &Path, contents: &str, time: i64) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -442,4 +445,99 @@ fn existing_single_file_associations_continue_syncing() {
     let item = db.get_item("note").unwrap();
     sync_item(&db, &item).unwrap();
     assert_eq!(fs::read_to_string(target).unwrap(), "hello");
+}
+
+#[test]
+fn global_rules_apply_to_the_whole_association_and_stay_additive() {
+    let f = Fixture::new();
+    write(&f.local.join("keep.txt"), "keep", 100);
+    write(&f.local.join("notes.md"), "notes", 100);
+    write(&f.local.join(".DS_Store"), "source finder", 100);
+    write(&f.local.join("cache/a"), "cached", 100);
+    // A pre-existing target copy of ignored content is cleaned up.
+    write(&f.cloud.join(".DS_Store"), "target finder", 100);
+    write(&f.cloud.join("cache/old"), "old", 100);
+    write(&f.local.join(".gitignore"), "notes.md\n", 100);
+    write(
+        &f.global_ignore(),
+        "# Linker-wide rules\n.DS_Store\ncache/\n",
+        100,
+    );
+
+    f.sync();
+
+    // Global and in-tree rules are both effective.
+    assert!(!f.cloud.join(".DS_Store").exists());
+    assert!(!f.cloud.join("cache").exists());
+    assert!(!f.cloud.join("notes.md").exists());
+    assert_eq!(
+        fs::read_to_string(f.cloud.join("keep.txt")).unwrap(),
+        "keep"
+    );
+    assert_eq!(
+        fs::read_to_string(f.cloud.join(".gitignore")).unwrap(),
+        "notes.md\n"
+    );
+    // Ignored source content is retained, including inside ignored directories.
+    assert_eq!(
+        fs::read_to_string(f.local.join(".DS_Store")).unwrap(),
+        "source finder"
+    );
+    assert_eq!(
+        fs::read_to_string(f.local.join("cache/a")).unwrap(),
+        "cached"
+    );
+    assert_eq!(
+        fs::read_to_string(f.local.join("notes.md")).unwrap(),
+        "notes"
+    );
+}
+
+#[test]
+fn unsupported_global_rule_lines_warn_with_the_global_file_path() {
+    let f = Fixture::new();
+    write(&f.local.join("a.pyc"), "byte", 100);
+    write(&f.global_ignore(), "*.py[cod]\n", 100);
+
+    let summary = f.sync();
+
+    assert_eq!(summary.warnings.len(), 1);
+    assert_eq!(summary.warnings[0].file, f.global_ignore());
+    assert_eq!(summary.warnings[0].line, 1);
+    // The unsupported line is skipped, so the file keeps synchronizing.
+    assert_eq!(fs::read_to_string(f.cloud.join("a.pyc")).unwrap(), "byte");
+}
+
+#[test]
+fn removing_a_global_rule_restores_normal_sync_after_target_cleanup() {
+    let f = Fixture::new();
+    write(&f.local.join(".DS_Store"), "finder", 100);
+    write(&f.global_ignore(), ".DS_Store\n", 100);
+
+    f.sync();
+    assert!(!f.cloud.join(".DS_Store").exists());
+
+    fs::remove_file(f.global_ignore()).unwrap();
+    f.sync();
+    assert_eq!(
+        fs::read_to_string(f.cloud.join(".DS_Store")).unwrap(),
+        "finder"
+    );
+    assert!(f.local.join(".DS_Store").exists());
+}
+
+#[test]
+fn the_global_ignore_file_itself_is_never_synchronized() {
+    let f = Fixture::new();
+    write(&f.local.join("keep.txt"), "keep", 100);
+    write(&f.global_ignore(), "orphan.txt\n", 100);
+
+    f.sync();
+
+    assert!(!f.local.join("global.gitignore").exists());
+    assert!(!f.cloud.join("global.gitignore").exists());
+    assert_eq!(
+        fs::read_to_string(f.cloud.join("keep.txt")).unwrap(),
+        "keep"
+    );
 }

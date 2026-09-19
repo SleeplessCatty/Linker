@@ -88,6 +88,13 @@ impl StateDb {
         Ok(db)
     }
 
+    /// Optional Linker-level ignore file beside the state database. Its rules
+    /// apply to every association at the association root, additive with in-tree
+    /// `.gitignore` files, and it is never synchronized.
+    pub fn global_ignore_path(&self) -> PathBuf {
+        self.directory.join("global.gitignore")
+    }
+
     fn migrate(&self) -> Result<()> {
         self.conn.execute_batch(
             r#"

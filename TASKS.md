@@ -116,6 +116,15 @@ The current CLI/ignore/sync additions have implementation and test coverage, sub
 - [x] Report cleanup failure with the association already removed, the source kept and the target possibly partial
 - [x] Cover partial cleanup, injected database failure and symlink-swap regressions
 
+## Global Ignore File
+
+- [x] Optional `global.gitignore` beside the state database, applied to every directory association at the association root
+- [x] Additive with in-tree controls; ignored source content kept and matching target copies cleaned
+- [x] Rejected lines warn with the global file's path; the content hash joins the rule fingerprint
+- [x] Never synchronized into a tree; an edit takes effect on the next pass or reconciliation
+- [x] Fail closed when unreadable, and reported by `linker doctor`
+- [x] Cover global-only rules, additivity, prune, rule removal, warnings and isolation between state databases
+
 ## Target-root Recovery
 
 - [x] Recreate an absent target root and restore from the source instead of propagating its content as deletions

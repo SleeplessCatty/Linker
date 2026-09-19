@@ -24,7 +24,7 @@ Runtime state is stored outside the repository:
 - `TASKS.md`: development progress and remaining roadmap.
 - `crates/linker-cli/src/output.rs`: Unicode-width tables, safe cell escaping and readable UTC timestamps.
 - `crates/linker-core/src/rules.rs`: basic `.gitignore` path-segment matcher and warning diagnostics.
-- `crates/linker-core/src/sync.rs`: control-first planning, baseline retirement, counted target cleanup, target-root recovery, and read-only audit/manual repair planning.
+- `crates/linker-core/src/sync.rs`: control-first planning, global rule loading, baseline retirement, counted target cleanup, target-root recovery, and read-only audit/manual repair planning.
 - `crates/linker-cli/tests/recovery.rs`: target-root loss, per-file deletion propagation and recovery-boundary integration tests.
 - `crates/linker-core/src/tree.rs`: descriptor-relative no-follow reads/copies/deletes.
 - `crates/linker-core/src/migration.rs`: backed-up, restartable metadata migrations to database schema 3; manifests remain schema 2.
@@ -52,7 +52,7 @@ Compared PRODUCT.md, SPEC.md, TASKS.md and the approved basic-.gitignore scope a
 | Shared source, multiple targets | Pairwise baselines and source locks; CLI fan-out/propagation/rollback tests, daemon startup/live multi-target event tests, schema-3 migration tests |
 | Add exact target and custom record name | `add_safety.rs`: destination contents/types, names, overlap, permissions, concurrent processes and rollback after partial copies |
 | Add/list/status/doctor/remove/delete | CLI integration tests; table covers multiple/empty items and Unicode/control characters |
-| Basic in-tree ignore subset and control-first sync | `rules.rs`, `sync.rs`; matching, warnings, nested rules, target-only cleanup and reinclusion tests |
+| Basic in-tree ignore subset, global rules and control-first sync | `rules.rs`, `sync.rs`; matching, warnings, nested rules, target-only cleanup, reinclusion and global-file tests |
 | State-preserving schema-2 upgrade | Migration tests include six associations, retries, partial backups and unknown snapshot preservation |
 | Bidirectional file sync and deletion | Core and CLI tests cover timestamps, permission preservation, deletion and source retention |
 | Cross-process item locks and no-follow cleanup | Lock serialization and parent-symlink replacement regression tests |
@@ -72,7 +72,7 @@ The requested CLI additions have implementation and test coverage. The previousl
 - `delete` unregisters the association and its baselines before touching the target, so partial or interrupted cleanup cannot be propagated to the source afterwards. Target removal uses pinned descriptors and never follows a root or ancestor symlink; a cleanup failure keeps the source, reports the failure explicitly and leaves the remainder for manual inspection.
 - The exact-target `add` interface is incompatible with old parent-directory arguments. Existing records are unchanged; retained nonempty targets cannot be re-added. `add` rollback handles caught failures, not process termination or all external-writer races.
 
-- `.gitignore` is a documented basic subset, not full Git compatibility; unsupported lines are skipped. Existing negation patterns must not be assumed to protect target files.
+- `.gitignore` is a documented basic subset, not full Git compatibility; unsupported lines are skipped. Existing negation patterns must not be assumed to protect target files. The optional global ignore file uses the same subset, is never synchronized, takes effect on the next pass or reconciliation, and fails an association's pass closed when it cannot be read.
 - Schema 2 migration preserves Linker 0.2 associations/state and archives old manual rules. Metadata backups do not protect user data; back up cleanup candidates before first 0.3 sync.
 - There is no GUI yet; all workflows are CLI based.
 - The sync policy is latest-modified-wins without version history or merge UI.
@@ -91,7 +91,7 @@ The requested CLI additions have implementation and test coverage. The previousl
 
 ## Verification Status
 
-Local verification on 2026-09-19: 121 Rust tests passed (3 output-unit, 20 CLI integration, 29 add-safety integration, 9 target-root recovery integration, 15 audit/repair integration, 11 core-unit, 17 sync integration, 9 migration, 1 daemon-unit, 7 daemon integration). Format, strict Clippy, compile/release build, Shell regressions and packaging syntax checks passed. This is local evidence; it does not claim that a remote CI run or GitHub release occurred. Add tests use isolated temporary state and directories; live associations are not modified. Permission checks require a non-root test user.
+Local verification on 2026-09-19: 126 Rust tests passed (3 output-unit, 20 CLI integration, 29 add-safety integration, 9 target-root recovery integration, 16 audit/repair integration, 11 core-unit, 21 sync integration, 9 migration, 1 daemon-unit, 7 daemon integration). Format, strict Clippy, compile/release build, Shell regressions and packaging syntax checks passed. This is local evidence; it does not claim that a remote CI run or GitHub release occurred. Add tests use isolated temporary state and directories; live associations are not modified. Permission checks require a non-root test user.
 
 ```bash
 cargo fmt --all --check

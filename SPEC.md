@@ -167,6 +167,8 @@ A shared source connects independent bidirectional pairs. Edits, ordinary deleti
 
 Each pass builds the rule set from effective source/target controls, top-down, without entering ignored source directories. Control read/type errors fail closed before changes. Daemon warning fingerprints suppress repeats until effective rule content changes or restart.
 
+One optional Linker-level file, `global.gitignore` beside the state database, is read first for every directory association, and its rules apply at the association root. It is additive with in-tree controls, its rejected lines warn with its full path, and its content hash joins the rule fingerprint so a change re-enables suppressed warnings. It is never synchronized, and an edit takes effect on the next pass or reconciliation. An unreadable global file fails that association's pass closed, before any change; `linker doctor` reports its state.
+
 ## Sync Algorithm
 
 For each item:

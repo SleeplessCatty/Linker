@@ -294,6 +294,7 @@ impl Plan {
         roots: &Roots,
         previous: &BTreeMap<String, StoredFileState>,
         options: PlanOptions,
+        global_ignore: &Path,
     ) -> Result<Self> {
         let mut plan = Self {
             options,
@@ -304,6 +305,7 @@ impl Plan {
                 .push(operation(roots, Path::new(""), previous, options)?);
             return Ok(plan);
         }
+        plan.load_global_rules(global_ignore)?;
         plan.visit(roots, Path::new(""), previous)?;
         for relative in previous.keys() {
             if plan.forget.contains(relative) {
@@ -318,6 +320,30 @@ impl Plan {
             }
         }
         Ok(plan)
+    }
+
+    /// Optional Linker-level rules from the directory holding the state
+    /// database. They apply at the association root, before any in-tree
+    /// control, are additive with it, and are never synchronized.
+    fn load_global_rules(&mut self, path: &Path) -> Result<()> {
+        let contents = match fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(std::io::Error::other(format!(
+                    "cannot read the global ignore file {}: {error}",
+                    path.display()
+                ))
+                .into())
+            }
+        };
+        self.warnings
+            .extend(self.rules.add(Path::new(""), path, &contents));
+        self.documents.push((
+            path.to_path_buf(),
+            format!("{:x}", Sha256::digest(contents.as_bytes())),
+        ));
+        Ok(())
     }
 
     fn visit(
@@ -597,7 +623,12 @@ fn run_sync(db: &StateDb, item: &Item, initial: bool) -> Result<SyncSummary> {
     let previous = previous(db, item)?;
     let target_root_recovered =
         !initial && target_was_missing && previous.values().any(|state| state.cloud_hash.is_some());
-    let plan = Plan::build(&roots, &previous, PlanOptions::sync(target_root_recovered))?;
+    let plan = Plan::build(
+        &roots,
+        &previous,
+        PlanOptions::sync(target_root_recovered),
+        &db.global_ignore_path(),
+    )?;
     plan.verify_controls(&roots)?;
     if initial
         && (!roots.cloud.entries(Path::new(""))?.is_empty()
@@ -672,7 +703,8 @@ pub fn preview_item(db: &StateDb, item: &Item) -> Result<SyncPreview> {
     let _source_lock = db.lock_source(&item.local_path)?;
     let plan = previous(db, &item)?;
     let roots = Roots::open(&item)?;
-    let plan = Plan::build(&roots, &plan, PlanOptions::sync(false))?;
+    let global_ignore = db.global_ignore_path();
+    let plan = Plan::build(&roots, &plan, PlanOptions::sync(false), &global_ignore)?;
     plan.verify_controls(&roots)?;
     let mut operations = Vec::new();
     for op in plan.controls.iter().chain(&plan.files) {
@@ -830,7 +862,12 @@ fn analyze(db: &StateDb, item: &Item, preference: Preference) -> Result<Analysis
     let previous = previous(db, item)?;
     // Audits collect type conflicts instead of aborting, and resolve control
     // files by the requested side so rules and content decisions agree.
-    let plan = Plan::build(&roots, &previous, PlanOptions::audit(preference))?;
+    let plan = Plan::build(
+        &roots,
+        &previous,
+        PlanOptions::audit(preference),
+        &db.global_ignore_path(),
+    )?;
     plan.verify_controls(&roots)?;
     Ok(Analysis {
         roots,

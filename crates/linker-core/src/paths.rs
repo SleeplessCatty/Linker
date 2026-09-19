@@ -46,6 +46,11 @@ pub fn app_manifests_dir() -> Result<PathBuf> {
     Ok(app_support_dir()?.join("manifests"))
 }
 
+/// Optional Linker-level ignore file, applied to every association.
+pub fn app_global_ignore_path() -> Result<PathBuf> {
+    Ok(app_support_dir()?.join("global.gitignore"))
+}
+
 /// Resolve existing ancestors before creating anything. This also handles ..
 /// after a symlink correctly, without treating a missing suffix as a real path.
 pub fn resolve_target_dir(path: &str) -> Result<PathBuf> {

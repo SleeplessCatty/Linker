@@ -95,6 +95,8 @@ The user should normally not need to run manual sync.
 
 `linker list` presents one table with complete source/target paths, status, last successful sync time in UTC, and errors. `linker sync [name] --dry-run` previews the same control and data operations without applying them or changing sync state. It does not pause the daemon or reserve the plan for later execution.
 
+`linker check [name]` audits both sides of an association without changing anything. It lists content differences, paths that exist on only one side (stating whether a normal sync would restore or delete them), file-versus-directory conflicts, ignored target content and unsupported entries, and exits with status 1 while a blocking difference remains. `linker repair [name] --prefer source|target|newest [--prune] [--dry-run]` then makes every divergence match one authoritative side, the source by default, and updates the stored baselines so automatic sync agrees with the result. Deletions require `--prune`. See [USAGE.md](USAGE.md#check-and-repair).
+
 ### Latest Modified Wins
 
 If both sides differ, Linker chooses the file with the newest modification time and copies it over the older side.
@@ -113,7 +115,7 @@ Stops syncing the item and removes local Linker association metadata. It keeps t
 linker delete demo
 ```
 
-Stops syncing the item, removes local Linker association metadata, and deletes the target directory. It does not directly delete the source directory. A known partial-delete failure can leave registration/baselines active and allow subsequent sync to propagate deletions; stop the daemon and inspect before recovery. See [USAGE.md](USAGE.md#remove-vs-delete).
+Stops syncing the item, removes local Linker association metadata, and deletes the target directory. It does not directly delete the source directory. The association and its baselines are unregistered before the target is touched, so a partial cleanup cannot later propagate into the source; a cleanup failure reports `association removed; target cleanup failed at ...` and leaves source and remainder for inspection. See [USAGE.md](USAGE.md#remove-vs-delete).
 
 ## MVP Command Set
 
@@ -124,10 +126,12 @@ linker delete <name>
 linker list
 linker status
 linker sync [name]
+linker check [name]
+linker repair [name] [--prefer source|target|newest] [--prune] [--dry-run]
 linker doctor
 ```
 
-`linker sync` is included mainly for testing and recovery. Normal use should rely on automatic sync.
+`linker sync` is included mainly for testing and recovery, and `linker check`/`linker repair` for auditing and converging associations manually. Normal use should rely on automatic sync.
 
 ## Non-Goals for MVP
 
@@ -154,4 +158,5 @@ Then:
 - see files directly in the target directory
 - edit target files from iPhone or iPad if the target is inside iCloud Drive
 - manage the supported basic patterns through `.gitignore`
+- audit any divergence between the two sides with `linker check` and converge it with `linker repair`
 - rely on latest-modified-wins without managing conflicts manually

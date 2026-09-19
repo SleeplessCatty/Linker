@@ -56,9 +56,14 @@ No Linker control directory is written into the exact target directory, so iClou
 linker list                    # table: paths, status, UTC sync time and errors
 linker list | less -S          # horizontal scrolling for wide tables
 linker sync Notes --dry-run    # preview copies, deletions and ignore cleanup
+linker check                   # read-only audit; exit status 1 when divergent
+linker repair Notes            # make the target match the source (adds and overwrites)
+linker repair Notes --prune    # also remove target-only and ignored target content
 ```
 
 Preview does not apply changes or update sync state, but a running daemon can still sync independently. See [USAGE.md](USAGE.md#preview-before-syncing) for prerequisites and safety boundaries.
+
+`linker check` is a read-only audit of both sides of every association: it reports content differences, one-sided paths (including whether a normal sync would restore or delete them), file-versus-directory conflicts, ignored target content and unsupported entries. `linker repair` then makes every divergence match one authoritative side, the source by default, and updates the stored baselines so the daemon does not revert it. Deletions stay opt-in behind `--prune`. See [check and repair](USAGE.md#check-and-repair).
 
 ## Documents
 
@@ -118,6 +123,7 @@ Must have:
 - latest-modified-wins conflict behavior
 - table-formatted association list and daemon health checks
 - dry-run preview for existing associations
+- read-only consistency audit and manual repair with an explicit authoritative side
 
 Deferred:
 

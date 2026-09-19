@@ -10,6 +10,123 @@ struct Fixture {
     tmp: tempfile::TempDir,
     state: PathBuf,
 }
+
+#[test]
+fn failed_delete_unregisters_before_target_cleanup_and_never_propagates_to_source() {
+    use std::os::unix::fs::PermissionsExt;
+    if Command::new("id").arg("-u").output().unwrap().stdout == b"0\n" {
+        return;
+    }
+    let f = Fixture::new();
+    let source = f.source("source");
+    let target = f.path("target");
+    f.add(&source, &target, Some("one")).assert().success();
+    f.add(&source, &f.path("other"), Some("other"))
+        .assert()
+        .success();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o500)).unwrap();
+    let output = f.cli().args(["delete", "one"]).output().unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("association removed"));
+    assert_eq!(f.count(), 1);
+    let conn = Connection::open(f.state.join("state.sqlite")).unwrap();
+    let dangling: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM file_states WHERE item_id NOT IN (SELECT id FROM items)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(dangling, 0);
+    assert!(!f.state.join("manifests/one.json").exists());
+    // Even if failed cleanup has removed only part of the target, later sync
+    // must not apply that disappearance to the source or another association.
+    fs::remove_file(target.join("keep.txt")).unwrap();
+    f.cli().arg("sync").assert().success();
+    assert_eq!(
+        fs::read_to_string(source.join("keep.txt")).unwrap(),
+        "source"
+    );
+    assert_eq!(
+        fs::read_to_string(f.path("other/keep.txt")).unwrap(),
+        "source"
+    );
+    f.cli()
+        .args(["sync", "one"])
+        .assert()
+        .failure()
+        .stderr(contains("not found"));
+}
+
+#[test]
+fn unregister_database_failure_keeps_target_and_all_baselines_unchanged() {
+    for command in ["remove", "delete"] {
+        let f = Fixture::new();
+        let source = f.source("source");
+        let target = f.path("target");
+        f.add(&source, &target, Some("one")).assert().success();
+        let conn = Connection::open(f.state.join("state.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_unregister BEFORE DELETE ON items
+            BEGIN SELECT RAISE(FAIL, 'injected unregister failure'); END;",
+        )
+        .unwrap();
+        let before: String = conn
+            .query_row("SELECT group_concat(id) FROM file_states", [], |r| r.get(0))
+            .unwrap();
+        f.cli().args([command, "one"]).assert().failure();
+        assert_eq!(f.count(), 1);
+        let after: String = conn
+            .query_row("SELECT group_concat(id) FROM file_states", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, after);
+        assert_eq!(
+            fs::read_to_string(source.join("keep.txt")).unwrap(),
+            "source"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("keep.txt")).unwrap(),
+            "source"
+        );
+        assert!(f.state.join("manifests/one.json").exists());
+    }
+}
+
+#[test]
+fn delete_never_follows_target_root_or_ancestor_symlink_to_source() {
+    for ancestor in [false, true] {
+        let f = Fixture::new();
+        let source = f.source("source");
+        let target = f.path("parent/target");
+        f.add(&source, &target, Some("one")).assert().success();
+        if ancestor {
+            fs::create_dir(source.join("target")).unwrap();
+            fs::write(source.join("target/precious.txt"), "keep").unwrap();
+            fs::rename(f.path("parent"), f.path("moved")).unwrap();
+            std::os::unix::fs::symlink(&source, f.path("parent")).unwrap();
+            f.cli()
+                .args(["delete", "one"])
+                .assert()
+                .failure()
+                .stderr(contains("association removed"));
+            assert_eq!(
+                fs::read_to_string(source.join("target/precious.txt")).unwrap(),
+                "keep"
+            );
+        } else {
+            fs::rename(&target, f.path("moved")).unwrap();
+            std::os::unix::fs::symlink(&source, &target).unwrap();
+            f.cli().args(["delete", "one"]).assert().success();
+            assert!(fs::symlink_metadata(&target).is_err());
+        }
+        assert_eq!(f.count(), 0);
+        assert_eq!(
+            fs::read_to_string(source.join("keep.txt")).unwrap(),
+            "source"
+        );
+    }
+}
 impl Fixture {
     fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();

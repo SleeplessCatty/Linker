@@ -24,7 +24,7 @@ Runtime state is stored outside the repository:
 - `TASKS.md`: development progress and remaining roadmap.
 - `crates/linker-cli/src/output.rs`: Unicode-width tables, safe cell escaping and readable UTC timestamps.
 - `crates/linker-core/src/rules.rs`: basic `.gitignore` path-segment matcher and warning diagnostics.
-- `crates/linker-core/src/sync.rs`: control-first planning, baseline retirement and counted target cleanup.
+- `crates/linker-core/src/sync.rs`: control-first planning, baseline retirement, counted target cleanup, and read-only audit/manual repair planning.
 - `crates/linker-core/src/tree.rs`: descriptor-relative no-follow reads/copies/deletes.
 - `crates/linker-core/src/migration.rs`: backed-up, restartable metadata migrations to database schema 3; manifests remain schema 2.
 - `crates/linker-core/src/lock.rs`: persistent per-association process lock files.
@@ -58,14 +58,15 @@ Compared PRODUCT.md, SPEC.md, TASKS.md and the approved basic-.gitignore scope a
 | Daemon automatic sync and warning suppression | Daemon integration test edits/removes rules and checks unchanged warnings are not repeated |
 | User-facing preview | CLI tests verify planned copies/deletions/cleanup, no file or DB-byte changes, no initialization, no legacy migration, and missing-root/control failures |
 | Installation and packaging safety | Five isolated Shell regression suites plus plist/Ruby syntax checks |
+| Read-only audit and manual repair | `crates/linker-cli/tests/repair.rs`: audit classes and exit status, dry-run stability of files and state, both fixed sides, newest, opt-in `--prune`, type-conflict resolution and missing-root/unknown-item errors |
 | Documentation | Table examples, preview action semantics, daemon timing, failure boundaries, migration/rollback and deferred scope |
 
-The requested CLI additions have implementation and test coverage. A separately identified partial-delete failure defect remains outstanding, as documented below. This is not a claim that every possible failure/race is eliminated. GUI, version history, merge UI, multi-device management, new single-file associations and GitHub/stable-Homebrew publishing remain outside this delivery.
+The requested CLI additions have implementation and test coverage. The previously identified partial-`delete` failure defect is fixed: unregistration and baseline retirement now precede any target cleanup. This is not a claim that every possible failure/race is eliminated. GUI, version history, merge UI, multi-device management, new single-file associations and GitHub/stable-Homebrew publishing remain outside this delivery.
 
 ## Known Defects and Risks
 
 - Shared targets are bidirectionally connected through their source. Edits and ordinary deletions can spread to other targets; convergence is pairwise, not atomic. Old daemons lack shared-source locking and must be stopped before upgrading both binaries.
-- `delete` removes the target before unregistering. Partial target-removal failure retains registration/baselines; later daemon sync can propagate missing target files to the source. Stop the daemon and inspect both trees before recovery. The new `add` rollback does not fix this separate deletion path.
+- `delete` unregisters the association and its baselines before touching the target, so partial or interrupted cleanup cannot be propagated to the source afterwards. Target removal uses pinned descriptors and never follows a root or ancestor symlink; a cleanup failure keeps the source, reports the failure explicitly and leaves the remainder for manual inspection.
 - The exact-target `add` interface is incompatible with old parent-directory arguments. Existing records are unchanged; retained nonempty targets cannot be re-added. `add` rollback handles caught failures, not process termination or all external-writer races.
 
 - `.gitignore` is a documented basic subset, not full Git compatibility; unsupported lines are skipped. Existing negation patterns must not be assumed to protect target files.
@@ -76,6 +77,10 @@ The requested CLI additions have implementation and test coverage. A separately 
 - Homebrew formula requires a real GitHub release tarball SHA before stable `brew install linker` works and is intentionally not an upgrade path.
 - LaunchAgent installation and incompatible cleanup are handled only by the guarded script installer, not Homebrew.
 - `/usr/local/bin` linking may require `sudo` on machines where the directory is owned by `root`.
+- `linker check` hashes both sides of every association and requires both roots to exist. On a large iCloud tree it takes about as long as a sync pass and can make iCloud download placeholders.
+- `linker repair` without `--prune` adds and overwrites only, so target-only paths, ignored target content and the losing side of a type conflict stay reported instead of converged; `check` keeps showing them until `--prune` is used deliberately.
+- A file-versus-directory conflict is resolved only with an explicit `--prefer source` or `--prefer target`; `--prefer newest` reports it as unresolved because a file and a directory have no comparable modification time.
+- Audit and repair never follow or rewrite symbolic links and special files, so those entries remain in the advisory class by design.
 - Dry-run is a snapshot and does not suspend the daemon; stop the service before reviewing a plan that must not execute independently.
 - Ordinary file sync does not mirror empty-directory history. Failed sync passes can be partially applied; this is not a transactional backup system.
 - `linkerd --once` reports individual association failures through stderr and item state; its process exit status alone is not a per-item success check.
@@ -83,7 +88,7 @@ The requested CLI additions have implementation and test coverage. A separately 
 
 ## Verification Status
 
-Local verification on 2026-09-19: 88 Rust tests passed (3 output-unit, 20 CLI integration, 26 add-safety integration, 6 core-unit, 17 sync integration, 9 migration, 1 daemon-unit, 6 daemon integration). Format, strict Clippy, compile/release build, Shell regressions and packaging syntax checks passed. This is local evidence; it does not claim that a remote CI run or GitHub release occurred. Add tests use isolated temporary state and directories; live associations are not modified. Permission checks require a non-root test user.
+Local verification on 2026-09-19: 101 Rust tests passed (3 output-unit, 20 CLI integration, 29 add-safety integration, 9 audit/repair integration, 7 core-unit, 17 sync integration, 9 migration, 1 daemon-unit, 6 daemon integration). Format, strict Clippy, compile/release build, Shell regressions and packaging syntax checks passed. This is local evidence; it does not claim that a remote CI run or GitHub release occurred. Add tests use isolated temporary state and directories; live associations are not modified. Permission checks require a non-root test user.
 
 ```bash
 cargo fmt --all --check

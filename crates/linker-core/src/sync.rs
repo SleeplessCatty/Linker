@@ -141,6 +141,28 @@ struct Plan {
     warnings: Vec<RuleWarning>,
     documents: Vec<(PathBuf, String)>,
     observed: BTreeSet<String>,
+    /// Populated only by lenient scans: a path whose source and target entry
+    /// types disagree, which ordinary sync refuses to reconcile.
+    conflicts: Vec<(PathBuf, String)>,
+    /// Entries that are neither regular files nor directories. They are never
+    /// followed or synchronized, so they need their own inventory for auditing.
+    unsupported: Vec<(PathBuf, String)>,
+    /// Entries that must not be descended into: type conflicts and unsupported
+    /// entries. Baseline paths inside them are left untouched instead of being
+    /// read through the wrong entry kind.
+    opaque: Vec<PathBuf>,
+    /// Strict scans abort on a type conflict; audits collect it instead.
+    strict: bool,
+}
+
+fn describe_kind(kind: Option<Kind>) -> &'static str {
+    match kind {
+        Some(Kind::File) => "a regular file",
+        Some(Kind::Directory) => "a directory",
+        Some(Kind::Symlink) => "a symbolic link",
+        Some(Kind::Other) => "a special file",
+        None => "absent",
+    }
 }
 
 fn key(path: &Path) -> Result<String> {
@@ -212,7 +234,18 @@ fn operation(
 
 impl Plan {
     fn build(roots: &Roots, previous: &BTreeMap<String, StoredFileState>) -> Result<Self> {
-        let mut plan = Self::default();
+        Self::build_with(roots, previous, true)
+    }
+
+    fn build_with(
+        roots: &Roots,
+        previous: &BTreeMap<String, StoredFileState>,
+        strict: bool,
+    ) -> Result<Self> {
+        let mut plan = Self {
+            strict,
+            ..Self::default()
+        };
         if roots.local_file.is_some() {
             plan.files.push(operation(roots, Path::new(""), previous)?);
             return Ok(plan);
@@ -224,7 +257,7 @@ impl Plan {
             }
             if plan.rules.ignored(Path::new(relative), false) {
                 plan.forget.insert(relative.clone());
-            } else if !plan.observed.contains(relative) {
+            } else if !plan.observed.contains(relative) && !plan.opaque_path(Path::new(relative)) {
                 // Do not infer deletion through a symlink or an unexpected file type.
                 let rel = Path::new(relative);
                 plan.files.push(operation(roots, rel, previous)?);
@@ -291,11 +324,25 @@ impl Plan {
                 }
                 self.forget.insert(key(&rel)?);
             } else if local.is_some() && cloud.is_some() && local != cloud {
-                return Err(std::io::Error::other(format!(
-                    "source/target type conflict: {}",
-                    rel.display()
-                ))
-                .into());
+                if self.strict {
+                    return Err(std::io::Error::other(format!(
+                        "source/target type conflict: {}",
+                        rel.display()
+                    ))
+                    .into());
+                }
+                // A directory cannot be descended into where the other side is a
+                // file, so record the path and leave both entries untouched.
+                self.observed.insert(key(&rel)?);
+                self.opaque.push(rel.clone());
+                self.conflicts.push((
+                    rel.clone(),
+                    format!(
+                        "source is {}, target is {}",
+                        describe_kind(local),
+                        describe_kind(cloud)
+                    ),
+                ));
             } else if is_dir {
                 self.visit(roots, &rel, previous)?;
             } else if local == Some(Kind::File) || cloud == Some(Kind::File) {
@@ -305,6 +352,15 @@ impl Plan {
                 // Unsupported filesystem entries are never followed or synchronized.
                 self.observed.insert(key(&rel)?);
                 self.forget.insert(key(&rel)?);
+                self.opaque.push(rel.clone());
+                self.unsupported.push((
+                    rel.clone(),
+                    format!(
+                        "source is {}, target is {}",
+                        describe_kind(local),
+                        describe_kind(cloud)
+                    ),
+                ));
             }
         }
         Ok(())
@@ -322,6 +378,13 @@ impl Plan {
                 .push((relative.to_path_buf(), kind == Kind::Directory));
         }
         Ok(())
+    }
+
+    /// True when the path lies inside an entry that must not be descended into.
+    fn opaque_path(&self, relative: &Path) -> bool {
+        self.opaque
+            .iter()
+            .any(|prefix| relative.starts_with(prefix))
     }
 
     fn fingerprint(&self) -> String {
@@ -584,4 +647,670 @@ pub fn preview_item(db: &StateDb, item: &Item) -> Result<SyncPreview> {
         operations,
         warnings: plan.warnings,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Manual consistency audit and repair.
+//
+// Ordinary sync converges what its baselines can explain and resolves conflicts
+// by modification time. A manual audit and repair exists for everything else:
+// divergent content, one-sided paths, entries whose types disagree, and ignored
+// target content, with the authoritative side stated explicitly by the caller
+// instead of inferred.
+// ---------------------------------------------------------------------------
+
+/// Which side is authoritative when both sides hold different content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preference {
+    Source,
+    Target,
+    Newest,
+}
+
+impl Preference {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "source" => Some(Self::Source),
+            "target" => Some(Self::Target),
+            "newest" => Some(Self::Newest),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::Target => "target",
+            Self::Newest => "newest",
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CheckEntry {
+    /// content_differs, source_only, target_only, type_conflict,
+    /// unsupported_entry or ignored_target_content.
+    pub class: String,
+    /// Affected side: source, target or both.
+    pub side: String,
+    pub path: PathBuf,
+    pub detail: String,
+    /// True when the association is not in the requested consistent state.
+    pub blocks: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CheckReport {
+    pub item_name: String,
+    pub source_path: String,
+    pub target_path: String,
+    pub identical: usize,
+    pub entries: Vec<CheckEntry>,
+    pub warnings: Vec<RuleWarning>,
+}
+
+impl CheckReport {
+    pub fn divergent(&self) -> usize {
+        self.entries.iter().filter(|entry| entry.blocks).count()
+    }
+
+    pub fn advisory(&self) -> usize {
+        self.entries.len() - self.divergent()
+    }
+
+    pub fn clean(&self) -> bool {
+        self.divergent() == 0
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RepairAction {
+    /// write_target, write_source, delete_target, delete_source,
+    /// prune_target_file, prune_target_directory, replace_target,
+    /// replace_source, skip_type_conflict or skip_unsupported.
+    pub action: String,
+    pub side: String,
+    pub path: PathBuf,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RepairReport {
+    pub item_name: String,
+    pub source_path: String,
+    pub target_path: String,
+    pub preference: String,
+    pub prune: bool,
+    pub dry_run: bool,
+    pub identical: usize,
+    /// Applied actions, or the actions a dry run would apply.
+    pub planned: Vec<RepairAction>,
+    /// Actions that were not applied, with the reason.
+    pub skipped: Vec<RepairAction>,
+    pub warnings: Vec<RuleWarning>,
+}
+
+struct Analysis {
+    roots: Roots,
+    plan: Plan,
+    previous: BTreeMap<String, StoredFileState>,
+}
+
+fn analyze(db: &StateDb, item: &Item, strict: bool) -> Result<Analysis> {
+    let roots = Roots::open(item)?;
+    let previous = previous(db, item)?;
+    let plan = Plan::build_with(&roots, &previous, strict)?;
+    plan.verify_controls(&roots)?;
+    Ok(Analysis {
+        roots,
+        plan,
+        previous,
+    })
+}
+
+fn require_existing_roots(item: &Item) -> Result<()> {
+    for path in [&item.local_path, &item.cloud_path] {
+        if !Path::new(path).exists() {
+            return Err(LinkerError::PathMissing(path.clone().into()));
+        }
+    }
+    Ok(())
+}
+
+fn newer_side(local: &FileMeta, cloud: &FileMeta) -> String {
+    if local.mtime > cloud.mtime {
+        format!("source is newer by {}s", local.mtime - cloud.mtime)
+    } else if cloud.mtime > local.mtime {
+        format!("target is newer by {}s", cloud.mtime - local.mtime)
+    } else {
+        "both sides carry the same modification time".into()
+    }
+}
+
+/// Which side the recorded baseline still matches, if either.
+fn relationship(prev: Option<&StoredFileState>, local: &FileMeta, cloud: &FileMeta) -> String {
+    let local_synced = prev.is_some_and(|state| {
+        state.local_hash.as_deref() == Some(&local.hash) && state.local_mtime == Some(local.mtime)
+    });
+    let cloud_synced = prev.is_some_and(|state| {
+        state.cloud_hash.as_deref() == Some(&cloud.hash) && state.cloud_mtime == Some(cloud.mtime)
+    });
+    match (local_synced, cloud_synced) {
+        (true, false) => "the target changed after the last sync".into(),
+        (false, true) => "the source changed after the last sync".into(),
+        (false, false) if prev.is_some() => "both sides changed after the last sync".into(),
+        (false, false) => "no baseline is recorded for this path".into(),
+        (true, true) => "both sides still match the baseline".into(),
+    }
+}
+
+/// Read-only audit. Creates only the synchronization lock files an ordinary
+/// preview also creates; never changes synced content or baselines.
+pub fn check_item(db: &StateDb, item: &Item) -> Result<CheckReport> {
+    let _lock = db.lock_item(&item.id)?;
+    let item = db.get_item(&item.id)?;
+    let _source_lock = db.lock_source(&item.local_path)?;
+    require_existing_roots(&item)?;
+    let analysis = analyze(db, &item, false)?;
+    let mut report = CheckReport {
+        item_name: item.name.clone(),
+        source_path: item.local_path.clone(),
+        target_path: item.cloud_path.clone(),
+        identical: 0,
+        entries: Vec::new(),
+        warnings: analysis.plan.warnings.clone(),
+    };
+    for op in analysis.plan.controls.iter().chain(&analysis.plan.files) {
+        let stored = key(&op.relative)?;
+        let prev = analysis.previous.get(&stored);
+        let source_path = analysis
+            .roots
+            .local
+            .path
+            .join(analysis.roots.local_rel(&op.relative));
+        let target_path = analysis
+            .roots
+            .cloud
+            .path
+            .join(analysis.roots.cloud_rel(&op.relative));
+        match (op.local.as_ref(), op.cloud.as_ref()) {
+            (None, None) => {}
+            (Some(local), Some(cloud)) if local.hash == cloud.hash => report.identical += 1,
+            (Some(local), Some(cloud)) => report.entries.push(CheckEntry {
+                class: "content_differs".into(),
+                side: "both".into(),
+                path: source_path,
+                detail: format!("{}; {}", newer_side(local, cloud), relationship(prev, local, cloud)),
+                blocks: true,
+            }),
+            (Some(_), None) => report.entries.push(CheckEntry {
+                class: "source_only".into(),
+                side: "source".into(),
+                path: source_path,
+                detail: if op.decision == Decision::DeleteLocal {
+                    "the target copy was removed after the last sync, so a normal sync deletes this source file; repair with --prefer source copies it back to the target"
+                        .into()
+                } else {
+                    "the source content is not in the target; a normal sync copies it to the target".into()
+                },
+                blocks: true,
+            }),
+            (None, Some(_)) => report.entries.push(CheckEntry {
+                class: "target_only".into(),
+                side: "target".into(),
+                path: target_path,
+                detail: if op.decision == Decision::DeleteCloud {
+                    "the source copy was removed after the last sync, so a normal sync deletes this target file".into()
+                } else {
+                    "the target content is not in the source; a normal sync copies it to the source".into()
+                },
+                blocks: true,
+            }),
+        }
+    }
+    for (relative, detail) in &analysis.plan.conflicts {
+        report.entries.push(CheckEntry {
+            class: "type_conflict".into(),
+            side: "both".into(),
+            path: analysis.roots.local.path.join(relative),
+            detail: format!(
+                "{detail}; a normal sync fails this association until one side is changed"
+            ),
+            blocks: true,
+        });
+    }
+    for (relative, directory) in &analysis.plan.prune {
+        report.entries.push(CheckEntry {
+            class: "ignored_target_content".into(),
+            side: "target".into(),
+            path: analysis.roots.cloud.path.join(relative),
+            detail: format!(
+                "target {} matches .gitignore; the source copy is kept and target cleanup removes this one",
+                if *directory { "directory" } else { "file" }
+            ),
+            blocks: false,
+        });
+    }
+    for (relative, detail) in &analysis.plan.unsupported {
+        report.entries.push(CheckEntry {
+            class: "unsupported_entry".into(),
+            side: "both".into(),
+            path: analysis.roots.local.path.join(relative),
+            detail: format!("{detail}; symbolic links and special files are never synchronized"),
+            blocks: false,
+        });
+    }
+    report
+        .entries
+        .sort_by(|first, second| first.path.cmp(&second.path));
+    Ok(report)
+}
+
+/// Which decision the requested side applies to one path. `Newest` reproduces
+/// ordinary sync exactly; the fixed sides override every content choice.
+fn resolve(preference: Preference, op: &Operation, prev: Option<&StoredFileState>) -> Decision {
+    let (local, cloud) = (op.local.as_ref(), op.cloud.as_ref());
+    match (local, cloud) {
+        (Some(local), Some(cloud)) => {
+            if local.hash == cloud.hash {
+                Decision::Noop
+            } else {
+                match preference {
+                    Preference::Source => Decision::CopyLocalToCloud,
+                    Preference::Target => Decision::CopyCloudToLocal,
+                    Preference::Newest => {
+                        if local.mtime >= cloud.mtime {
+                            Decision::CopyLocalToCloud
+                        } else {
+                            Decision::CopyCloudToLocal
+                        }
+                    }
+                }
+            }
+        }
+        (Some(_), None) => match preference {
+            Preference::Source => Decision::CopyLocalToCloud,
+            Preference::Target => Decision::DeleteLocal,
+            Preference::Newest => decide(local, cloud, prev),
+        },
+        (None, Some(_)) => match preference {
+            Preference::Source => Decision::DeleteCloud,
+            Preference::Target => Decision::CopyCloudToLocal,
+            Preference::Newest => decide(local, cloud, prev),
+        },
+        (None, None) => Decision::Deleted,
+    }
+}
+
+fn resolved_operation(op: &Operation, decision: Decision) -> Operation {
+    Operation {
+        relative: op.relative.clone(),
+        local: op.local.clone(),
+        cloud: op.cloud.clone(),
+        decision,
+    }
+}
+
+fn collect_files(tree: &Tree, relative: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    match tree.kind(relative)? {
+        Some(Kind::File) => out.push(relative.to_path_buf()),
+        Some(Kind::Directory) => {
+            for name in tree.entries(relative)? {
+                collect_files(tree, &relative.join(name), out)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Borrowed scan of one association, shared by every repair decision.
+struct RepairScope<'a> {
+    roots: &'a Roots,
+    plan: &'a Plan,
+    previous: &'a BTreeMap<String, StoredFileState>,
+}
+
+struct RepairPass<'a> {
+    db: &'a StateDb,
+    item: &'a Item,
+    scope: RepairScope<'a>,
+    preference: Preference,
+    prune: bool,
+    dry_run: bool,
+    summary: SyncSummary,
+    report: RepairReport,
+}
+
+impl<'a> RepairPass<'a> {
+    fn new(
+        db: &'a StateDb,
+        item: &'a Item,
+        scope: RepairScope<'a>,
+        preference: Preference,
+        prune: bool,
+        dry_run: bool,
+    ) -> Self {
+        let plan = scope.plan;
+        let report = RepairReport {
+            item_name: item.name.clone(),
+            source_path: item.local_path.clone(),
+            target_path: item.cloud_path.clone(),
+            preference: preference.label().into(),
+            prune,
+            dry_run,
+            identical: 0,
+            planned: Vec::new(),
+            skipped: Vec::new(),
+            warnings: plan.warnings.clone(),
+        };
+        let summary = SyncSummary {
+            item_name: item.name.clone(),
+            copied_local_to_cloud: 0,
+            copied_cloud_to_local: 0,
+            deleted_local: 0,
+            deleted_cloud: 0,
+            pruned_cloud_directories: 0,
+            unchanged: 0,
+            warnings: Vec::new(),
+            rules_fingerprint: plan.fingerprint(),
+        };
+        Self {
+            db,
+            item,
+            scope,
+            preference,
+            prune,
+            dry_run,
+            summary,
+            report,
+        }
+    }
+
+    fn run(mut self) -> Result<RepairReport> {
+        let plan = self.scope.plan;
+        let roots = self.scope.roots;
+        // Retire ignored baselines before any cleanup, exactly as sync does: a
+        // partial failure must never turn cleanup into a source deletion later.
+        if self.prune && !self.dry_run {
+            for relative in &plan.forget {
+                self.db.forget_file_state(&self.item.id, relative)?;
+            }
+        }
+        let operations: Vec<&Operation> = plan.controls.iter().chain(&plan.files).collect();
+        for op in operations {
+            self.resolve(op)?;
+        }
+        for (relative, detail) in &plan.conflicts {
+            self.conflict(relative, detail)?;
+        }
+        self.ignored_target_content()?;
+        for (relative, detail) in &plan.unsupported {
+            self.report.skipped.push(RepairAction {
+                action: "skip_unsupported".into(),
+                side: "both".into(),
+                path: roots.local.path.join(relative),
+                note: format!("{detail}; symbolic links and special files are never synchronized"),
+            });
+        }
+        // Deterministic output regardless of scan order.
+        self.report
+            .planned
+            .sort_by(|first, second| first.path.cmp(&second.path));
+        self.report
+            .skipped
+            .sort_by(|first, second| first.path.cmp(&second.path));
+        if !self.dry_run {
+            self.db.mark_item_synced(&self.item.id)?;
+        }
+        Ok(self.report)
+    }
+
+    fn resolve(&mut self, op: &Operation) -> Result<()> {
+        let db = self.db;
+        let item = self.item;
+        let roots = self.scope.roots;
+        let stored = key(&op.relative)?;
+        let decision = resolve(self.preference, op, self.scope.previous.get(&stored));
+        let source_path = roots.local.path.join(roots.local_rel(&op.relative));
+        let target_path = roots.cloud.path.join(roots.cloud_rel(&op.relative));
+        match decision {
+            Decision::Noop => self.report.identical += 1,
+            Decision::Deleted => {}
+            Decision::CopyLocalToCloud | Decision::CopyCloudToLocal => {
+                let source_wins = decision == Decision::CopyLocalToCloud;
+                self.report.planned.push(RepairAction {
+                    action: if source_wins {
+                        "write_target"
+                    } else {
+                        "write_source"
+                    }
+                    .into(),
+                    side: if source_wins { "target" } else { "source" }.into(),
+                    path: if source_wins {
+                        target_path
+                    } else {
+                        source_path
+                    },
+                    note: if source_wins {
+                        format!(
+                            "the source copy is authoritative ({})",
+                            self.preference.label()
+                        )
+                    } else {
+                        format!(
+                            "the target copy is authoritative ({})",
+                            self.preference.label()
+                        )
+                    },
+                });
+                if !self.dry_run {
+                    let resolved = resolved_operation(op, decision);
+                    apply(db, item, roots, &resolved, &mut self.summary)?;
+                }
+            }
+            Decision::DeleteLocal | Decision::DeleteCloud => {
+                let delete_source = decision == Decision::DeleteLocal;
+                let action = if delete_source {
+                    "delete_source"
+                } else {
+                    "delete_target"
+                };
+                let path = if delete_source {
+                    source_path
+                } else {
+                    target_path
+                };
+                if !self.prune {
+                    self.report.skipped.push(RepairAction {
+                        action: action.into(),
+                        side: if delete_source { "source" } else { "target" }.into(),
+                        path,
+                        note: "the winning side has no such path; rerun with --prune to remove it"
+                            .into(),
+                    });
+                    return Ok(());
+                }
+                self.report.planned.push(RepairAction {
+                    action: action.into(),
+                    side: if delete_source { "source" } else { "target" }.into(),
+                    path,
+                    note: "removed because the winning side has no such path".into(),
+                });
+                if !self.dry_run {
+                    let resolved = resolved_operation(op, decision);
+                    apply(db, item, roots, &resolved, &mut self.summary)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn conflict(&mut self, relative: &Path, detail: &str) -> Result<()> {
+        if self.preference == Preference::Newest {
+            self.report.skipped.push(RepairAction {
+                action: "skip_type_conflict".into(),
+                side: "both".into(),
+                path: self.scope.roots.local.path.join(relative),
+                note: format!("{detail}; a type conflict has no newest side, rerun with --prefer source or --prefer target"),
+            });
+            return Ok(());
+        }
+        let (db, item, roots, previous) =
+            (self.db, self.item, self.scope.roots, self.scope.previous);
+        let source_wins = self.preference == Preference::Source;
+        let winner_side = if source_wins { "source" } else { "target" };
+        let loser_side = if source_wins { "target" } else { "source" };
+        let winner = if source_wins {
+            &roots.local
+        } else {
+            &roots.cloud
+        };
+        let loser = if source_wins {
+            &roots.cloud
+        } else {
+            &roots.local
+        };
+        let action = if source_wins {
+            "replace_target"
+        } else {
+            "replace_source"
+        };
+        let mut files = Vec::new();
+        collect_files(winner, relative, &mut files)?;
+        let mirror = if files.is_empty() {
+            "the winner holds an empty directory, which Linker does not mirror".to_string()
+        } else {
+            format!(
+                "and {} file(s) from the {winner_side} are copied",
+                files.len()
+            )
+        };
+        if !self.prune {
+            self.report.skipped.push(RepairAction {
+                action: action.into(),
+                side: loser_side.into(),
+                path: loser.path.join(relative),
+                note: format!(
+                    "{detail}; replacing the {loser_side} entry requires --prune ({mirror})"
+                ),
+            });
+            return Ok(());
+        }
+        self.report.planned.push(RepairAction {
+            action: action.into(),
+            side: loser_side.into(),
+            path: loser.path.join(relative),
+            note: format!("{detail}; the {winner_side} entry replaces it, {mirror}"),
+        });
+        if self.dry_run {
+            return Ok(());
+        }
+        loser.remove_recursive(relative)?;
+        for file in files {
+            let op = operation(roots, &file, previous)?;
+            let decision = if source_wins {
+                Decision::CopyLocalToCloud
+            } else {
+                Decision::CopyCloudToLocal
+            };
+            let resolved = Operation {
+                relative: file,
+                local: op.local,
+                cloud: op.cloud,
+                decision,
+            };
+            apply(db, item, roots, &resolved, &mut self.summary)?;
+        }
+        Ok(())
+    }
+
+    fn ignored_target_content(&mut self) -> Result<()> {
+        let plan = self.scope.plan;
+        let roots = self.scope.roots;
+        for (relative, directory) in &plan.prune {
+            let action = if *directory {
+                "prune_target_directory"
+            } else {
+                "prune_target_file"
+            };
+            let path = roots.cloud.path.join(relative);
+            if !self.prune {
+                self.report.skipped.push(RepairAction {
+                    action: action.into(),
+                    side: "target".into(),
+                    path,
+                    note: "matches .gitignore; the source copy is kept and the target copy is removed only with --prune".into(),
+                });
+                continue;
+            }
+            self.report.planned.push(RepairAction {
+                action: action.into(),
+                side: "target".into(),
+                path,
+                note: "ignored target content removed, matching an ordinary sync".into(),
+            });
+            if !self.dry_run {
+                let removed = roots.cloud.remove(relative, *directory).map_err(|error| {
+                    std::io::Error::other(format!(
+                        "target cleanup failed at {}: {error}",
+                        roots.cloud.path.join(relative).display()
+                    ))
+                })?;
+                if removed {
+                    if *directory {
+                        self.summary.pruned_cloud_directories += 1;
+                    } else {
+                        self.summary.deleted_cloud += 1;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Make every diverging non-ignored path match the requested side. Deletions
+/// happen only with `prune`; without it one-sided paths are reported instead.
+pub fn repair_item(
+    db: &StateDb,
+    item: &Item,
+    preference: Preference,
+    prune: bool,
+    dry_run: bool,
+) -> Result<RepairReport> {
+    let _lock = db.lock_item(&item.id)?;
+    let item = db.get_item(&item.id)?;
+    let _source_lock = db.lock_source(&item.local_path)?;
+    let result = run_repair(db, &item, preference, prune, dry_run);
+    if let Err(error) = &result {
+        if !dry_run {
+            db.mark_item_error(&item.id, &error.to_string())?;
+        }
+    }
+    result
+}
+
+fn run_repair(
+    db: &StateDb,
+    item: &Item,
+    preference: Preference,
+    prune: bool,
+    dry_run: bool,
+) -> Result<RepairReport> {
+    require_existing_roots(item)?;
+    let analysis = analyze(db, item, false)?;
+    RepairPass::new(
+        db,
+        item,
+        RepairScope {
+            roots: &analysis.roots,
+            plan: &analysis.plan,
+            previous: &analysis.previous,
+        },
+        preference,
+        prune,
+        dry_run,
+    )
+    .run()
 }

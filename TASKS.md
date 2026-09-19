@@ -8,7 +8,7 @@
 - Sync model: bidirectional mirror copy between source directory and target directory
 - Conflict behavior: latest modified file wins
 - First implementation order: manual sync before daemon auto sync
-- `remove` preserves both trees; `delete` must preserve source data (partial-failure protection remains outstanding below)
+- `remove` preserves both trees; `delete` unregisters the association and its baselines before removing the target, so partial cleanup cannot propagate to the source
 
 ## Phase 1: CLI, State, Manifest
 
@@ -108,6 +108,23 @@ The current CLI/ignore/sync additions have implementation and test coverage, sub
 - [x] Exercise permissions, control failures, injected database errors and concurrent CLI processes
 - [x] Document incompatible positional semantics and unchanged existing records
 
+## Delete Failure Safety
+
+- [x] Unregister the association and its baselines in one transaction before touching target data
+- [x] Hold the add-registry lock so a failed cleanup cannot be reused by a new `add`
+- [x] Remove the target through pinned descriptors, never following a root or ancestor symlink
+- [x] Report cleanup failure with the association already removed, the source kept and the target possibly partial
+- [x] Cover partial cleanup, injected database failure and symlink-swap regressions
+
+## Manual Consistency Check and Repair
+
+- [x] `linker check [name]`: read-only audit with content, one-sided, type-conflict, ignored-content and unsupported-entry classes
+- [x] Exit status 1 for blocking differences so the command can gate scripting
+- [x] `linker repair [name] --prefer source|target|newest [--prune] [--dry-run]`, defaulting to the source side
+- [x] Add and overwrite only unless `--prune`; deletions and type-conflict replacement stay opt-in
+- [x] Update baselines for repaired paths so the daemon does not undo the repair
+- [x] Cover audit classes, absent roots, dry-run stability, both fixed sides, newest, prune and type conflicts
+
 ## Shared Sources
 
 - [x] Allow exact canonical directory-source reuse with separate targets/names
@@ -118,10 +135,6 @@ The current CLI/ignore/sync additions have implementation and test coverage, sub
 - [x] Cover fan-out, target edits/deletions, conflict convergence, ignore cleanup/reinclusion and per-record removal/rollback
 - [x] Cover migration preservation/retry/unsafe-backup rejection and daemon startup with multiple targets
 - [x] Document bidirectional propagation, pairwise timing and old-daemon upgrade precautions
-
-## Outstanding Defect
-
-- [ ] Make partial `delete` failures safe before later daemon sync can propagate target deletions to the source. Not changed by the add safety work; see USAGE.md.
 
 ## Deferred
 

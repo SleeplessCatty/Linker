@@ -246,12 +246,13 @@ impl StateDb {
 
     pub fn remove_item(&self, name: &str) -> Result<Item> {
         let item = self.get_item(name)?;
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "DELETE FROM file_states WHERE item_id = ?1",
             params![&item.id],
         )?;
-        self.conn
-            .execute("DELETE FROM items WHERE id = ?1", params![&item.id])?;
+        tx.execute("DELETE FROM items WHERE id = ?1", params![&item.id])?;
+        tx.commit()?;
         Ok(item)
     }
 

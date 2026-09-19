@@ -167,6 +167,54 @@ Dry-run does not change sync files, manifests, baselines, timestamps, or stored 
 
 **Preview is not a pause or an approval gate.** A running daemon can sync independently after the preview releases its item lock. Stop the daemon first if you need to review a cleanup plan before anything changes. Results are a snapshot, not a saved executable plan; a later sync recomputes them.
 
+## Check and Repair
+
+`linker sync` converges what its baselines explain and resolves competing content by modification time. Use `check` to see every remaining difference and `repair` to make both sides match one side that you choose.
+
+### Check
+
+```bash
+linker check
+linker check demo
+```
+
+The audit is read-only. It scans both directories with the same rules, control files and no-follow file access as sync, prints the number of identical files plus one `CLASS | SIDE | PATH | DETAIL` row per difference, and exits with status 1 when a blocking difference exists, so it can gate a script.
+
+| Class | Meaning |
+| --- | --- |
+| `content_differs` | Both sides hold a file with different content. `DETAIL` names the newer side and whether the recorded baseline still matches one side. |
+| `source_only` | The file exists only in the source. `DETAIL` states whether a normal sync would copy it to the target or delete it from the source, which happens when the target copy was removed after the last sync. |
+| `target_only` | The file exists only in the target; the mirror of `source_only`. |
+| `type_conflict` | One side is a file where the other side is a directory. Ordinary sync reports an error for that association until one side is changed. |
+| `ignored_target_content` | Target content matched by an effective `.gitignore` rule. The source copy is kept and the next sync removes this one. |
+| `unsupported_entry` | A symbolic link or another special file. It is never followed or synchronized. |
+
+The first four classes are counted as `divergent`; `ignored_target_content` and `unsupported_entry` are counted as `advisory` because they follow the documented ignore and file-type contract. `check` never writes files or baselines, never initializes or migrates state, and requires both roots to exist.
+
+### Repair
+
+```bash
+linker repair                  # the source is authoritative (default)
+linker repair demo --prefer source
+linker repair demo --prefer target
+linker repair demo --prefer newest
+linker repair demo --prune     # also remove paths the source does not have
+linker repair demo --dry-run   # list the operations only
+```
+
+`repair` makes every diverging path match the authoritative side:
+
+- content that both sides have is overwritten with the authoritative copy;
+- a path only the source has is copied to the target, and the reverse with `--prefer target`;
+- a path only the non-authoritative side has is reported and kept unless `--prune` is given;
+- ignored target content and the losing side of a type conflict are removed only with `--prune`;
+- `--prefer newest` reproduces ordinary sync, including propagating a deletion that the baselines recorded; the default `source` restores from the source instead;
+- a file-versus-directory conflict needs an explicit `--prefer source` or `--prefer target`, because "newest" cannot compare a file with a directory.
+
+Repaired paths update the stored baselines, so the daemon does not revert the repair on its next pass. `--dry-run` prints the operations as `planned` without touching files or state.
+
+**`--prune` is the only option that can delete data.** It removes target content the source does not have, ignored target files and directories, and the losing side of a type conflict, always through descriptor-relative no-follow removal. Review `linker repair demo --dry-run --prune` first. Entries that are neither regular files nor directories are never touched.
+
 ## Inspect Items
 
 ```bash
@@ -223,7 +271,13 @@ This keeps the source directory, but deletes:
 - the target directory
 - the matching local manifest
 
-Known failure limitation: if target removal fails partway (for example, `Directory not empty` while iCloud modifies the tree), registration and baselines may remain. A later sync can interpret partial target deletions as source deletions. Stop the daemon and inspect both sides before recovery; do not assume a failed `delete` is harmless or that re-adding fixes it. This outstanding delete failure-protection issue is separate from the guarded `add` workflow.
+Failure behavior: Linker unregisters the association and its baselines before touching the target, so a partial cleanup can never be read back as a deletion to propagate into the source, and the name/pair stay reserved until cleanup finishes. The failure is still reported explicitly:
+
+```text
+error: association removed; target cleanup failed at /path/to/target: ...; source kept, target may be partially removed; inspect the remainder manually
+```
+
+The command exits with status 1. The source directory is intact, the association is gone from `linker list`, and the target may keep the entries that could not be removed. Inspect and remove the remainder yourself, then run `linker add` again if the association is still wanted. A failed `delete` no longer requires stopping the daemon to protect the source.
 
 ## Mobile Editing
 

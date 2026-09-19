@@ -174,23 +174,45 @@ pub fn doctor() -> DoctorReport {
 
 pub fn remove_item(name: &str) -> Result<Item> {
     let db = StateDb::open(&paths::state_db_path()?)?;
+    let _registry_lock = db.lock_add()?;
     let found = db.get_item(name)?;
     let _lock = db.lock_item(&found.id)?;
     let _source_lock = db.lock_source(&found.local_path)?;
-    let item = db.remove_item(name)?;
-    remove_file_if_exists(&paths::app_manifests_dir()?.join(format!("{}.json", item.name)))?;
+    let item = db.remove_item(&found.id)?;
+    remove_manifest_after_unregister(&item)?;
     Ok(item)
 }
 
 pub fn delete_item(name: &str) -> Result<Item> {
     let db = StateDb::open(&paths::state_db_path()?)?;
+    // Keep names/paths reserved until cleanup completes, in the same lock order
+    // as add. Never let another add reuse a target while delete is removing it.
+    let _registry_lock = db.lock_add()?;
     let found = db.get_item(name)?;
     let _lock = db.lock_item(&found.id)?;
     let _source_lock = db.lock_source(&found.local_path)?;
-    let item = db.get_item(name)?;
-    remove_path_if_exists(Path::new(&item.cloud_path))?;
-    remove_file_if_exists(&paths::app_manifests_dir()?.join(format!("{}.json", item.name)))?;
-    db.remove_item(name)
+    // Commit removal of the association AND baselines before touching target
+    // data. Failure, partial cleanup or process death cannot revive this pair.
+    let item = db.remove_item(&found.id)?;
+    remove_manifest_after_unregister(&item)?;
+    crate::tree::Tree::remove_absolute_tree(Path::new(&item.cloud_path)).map_err(|error| {
+        std::io::Error::other(format!(
+            "association removed; target cleanup failed at {}: {error}; source kept, target may be partially removed; inspect the remainder manually",
+            item.cloud_path
+        ))
+    })?;
+    Ok(item)
+}
+
+fn remove_manifest_after_unregister(item: &Item) -> Result<()> {
+    let path = paths::app_manifests_dir()?.join(format!("{}.json", item.name));
+    remove_file_if_exists(&path).map_err(|error| {
+        std::io::Error::other(format!(
+            "association removed; manifest cleanup failed at {}: {error}; source and target kept",
+            path.display()
+        ))
+        .into()
+    })
 }
 
 pub fn sync_item(name: Option<&str>) -> Result<Vec<SyncSummary>> {
@@ -231,21 +253,67 @@ pub fn preview_sync(name: Option<&str>) -> Result<Vec<crate::sync::SyncPreview>>
         .collect()
 }
 
+/// Read-only consistency audit. Never initializes or migrates state.
+pub fn check_items(name: Option<&str>) -> Result<Vec<crate::sync::CheckReport>> {
+    let path = paths::state_db_path()?;
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return match name {
+                Some(name) => Err(crate::LinkerError::ItemNotFound(name.into())),
+                None => Ok(Vec::new()),
+            };
+        }
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    let db = StateDb::open_read_only(&path)?;
+    let items = match name {
+        Some(name) => vec![db.get_item(name)?],
+        None => db.list_items()?,
+    };
+    items
+        .iter()
+        .map(|item| crate::sync::check_item(&db, item))
+        .collect()
+}
+
+/// Manual convergence toward one authoritative side. A dry run must not create
+/// or migrate state, so only the applied form opens a writable database.
+pub fn repair_items(
+    name: Option<&str>,
+    preference: crate::sync::Preference,
+    prune: bool,
+    dry_run: bool,
+) -> Result<Vec<crate::sync::RepairReport>> {
+    let path = paths::state_db_path()?;
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return match name {
+                Some(name) => Err(crate::LinkerError::ItemNotFound(name.into())),
+                None => Ok(Vec::new()),
+            };
+        }
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    let db = if dry_run {
+        StateDb::open_read_only(&path)?
+    } else {
+        StateDb::open(&path)?
+    };
+    let items = match name {
+        Some(name) => vec![db.get_item(name)?],
+        None => db.list_items()?,
+    };
+    items
+        .iter()
+        .map(|item| crate::sync::repair_item(&db, item, preference, prune, dry_run))
+        .collect()
+}
+
 fn remove_file_if_exists(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err.into()),
-    }
-}
-
-fn remove_path_if_exists(path: &Path) -> Result<()> {
-    match fs::metadata(path) {
-        Ok(metadata) if metadata.is_dir() => {
-            fs::remove_dir_all(path)?;
-            Ok(())
-        }
-        Ok(_) => remove_file_if_exists(path),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err.into()),
     }

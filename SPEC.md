@@ -73,6 +73,8 @@ linker add <source-directory> <target-directory> [--name <name>]
 linker list
 linker status
 linker sync [name] [--dry-run]
+linker check [name]
+linker repair [name] [--prefer source|target|newest] [--prune] [--dry-run]
 linker remove <name>
 linker delete <name>
 linker doctor
@@ -84,6 +86,8 @@ Command responsibilities:
 - `list`: render one table, ordered by name, with name/type/status/full paths/UTC last-successful-sync/error columns; use display-width padding, escape control characters and never truncate paths.
 - `status`: show daemon health only.
 - `sync`: run one sync pass manually; `--dry-run` uses a read-only database connection and the same planner, returning operations without applying them or updating sync state.
+- `check`: report the differences between both sides of every association (or one named association) without changing anything; exit status 1 when a blocking difference exists.
+- `repair`: make every diverging path match one explicitly requested authoritative side, updating baselines so a later sync agrees; deletions require `--prune`.
 - `remove`: stop syncing an item without deleting source or target directories.
 - `delete`: stop syncing and remove the target directory.
 
@@ -185,6 +189,29 @@ Relative paths are normal paths inside the associated directory. `tree.rs` pins 
 
 CLI renders absolute action/path pairs, warnings on stderr, and `no changes` for an empty plan. A missing database returns `no items` without creating storage (or item-not-found for an explicit name). The plan is only a snapshot; it is neither persisted nor used as a gate for subsequent daemon passes.
 
+## Consistency Audit and Repair
+
+`sync` converges what the baselines explain and resolves competing content by modification time. `check` and `repair` cover everything else and let the caller state which side is authoritative instead of inferring it.
+
+`linker check [name]` is read-only. It takes the same item and source locks, scans both roots with the same controls, effective rules and no-follow access that sync uses, and reports the identical file count plus one row per difference:
+
+| Class | Meaning | Blocking |
+| --- | --- | --- |
+| `content_differs` | Both sides hold a regular file with different content; the row states which side is newer and which side the baseline still matches. | yes |
+| `source_only` | A file exists only in the source; a normal sync copies it to the target, or deletes it from the source when the baseline proves the target copy was removed after the last sync. | yes |
+| `target_only` | The mirror case on the target side. | yes |
+| `type_conflict` | One side is a regular file where the other is a directory; ordinary sync fails this association until one side changes, and baselines inside the conflicting entry are left unread. | yes |
+| `ignored_target_content` | Target content matched by an effective `.gitignore` rule; the source copy is kept and target cleanup removes this one. | no |
+| `unsupported_entry` | A symbolic link or another special file; never followed or synchronized. | no |
+
+The exit status is 1 when any blocking class is present, so the command can gate scripting. The audit itself writes nothing: only synchronization lock files may be created, and `StateDb::open_read_only` refuses uninitialized or legacy state instead of migrating it. A missing root is an error, never a silently created directory.
+
+`linker repair [name] --prefer source|target|newest [--prune] [--dry-run]` makes every diverging non-ignored path match the authoritative side. `source` is the default. `newest` reproduces ordinary sync, including baseline-driven deletion propagation. Applied copies use the same `apply` path as sync, so `file_states` baselines are updated for each repaired path and a later daemon pass sees a converged association instead of reverting the repair.
+
+Without `--prune` the command only adds and overwrites. A path the authoritative side does not have, ignored target content and the losing side of a type conflict are reported with their reason and skipped. `--prune` is the only option that can delete data: it removes those paths, and replacing a type conflict uses recursive no-follow removal, so a swapped target root or ancestor symlink cannot redirect the deletion into the source. Ignored baselines are retired before any pruned cleanup, as in ordinary sync.
+
+A file-versus-directory conflict is resolved only with an explicit `source` or `target` preference, because `newest` has no comparable modification time for the pair. Entries that are neither regular files nor directories are never touched. `--dry-run` lists the operations without changing files or state, and requires the same upgraded, existing state as the applied form.
+
 ## Latest Modified Wins
 
 If source and target both exist and differ:
@@ -210,7 +237,8 @@ Item commands:
 - `remove` deletes local Linker association state and local metadata, but keeps source and target directories.
 - `delete` deletes local Linker association state, local metadata, and target directory.
 - neither command directly deletes the source directory.
-- Known defect: target deletion happens before unregistering; a partial `delete` failure can leave active baselines that later propagate missing target files to the source. Stop the daemon and inspect before recovery. Fixing this separate delete failure path remains outstanding.
+- Both item commands hold the add-registry lock, then unregister the association and its baselines in one transaction before any target data is touched. A partial or interrupted target cleanup therefore cannot leave active baselines, and no later sync can propagate that cleanup to the source. The name and pair stay reserved until cleanup finishes, so a concurrent `add` cannot reuse them mid-deletion.
+- Target removal runs through pinned parent descriptors and never follows the target root or an ancestor symlink. Cleanup failure is reported as `association removed; target cleanup failed at <path>; source kept, target may be partially removed; inspect the remainder manually` with exit status 1; the source is intact and the remainder is left for manual inspection. See [USAGE.md](USAGE.md#remove-vs-delete).
 
 Ordinary synchronization tracks files; empty directories are not independently mirrored or removed. Manual all-item sync stops on the first error, without rollback of completed operations; the daemon handles errors per association and continues.
 

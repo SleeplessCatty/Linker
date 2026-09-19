@@ -1,9 +1,31 @@
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use linker_core::health::CheckStatus;
 use linker_core::ops::{self, AddOptions};
+use linker_core::sync::Preference;
 use linker_core::{LinkerError, Result};
 
 mod output;
+
+/// Authoritative side for `linker repair`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Prefer {
+    /// The source directory decides every difference.
+    Source,
+    /// The target directory decides every difference.
+    Target,
+    /// The newer modification time decides, like ordinary sync.
+    Newest,
+}
+
+impl From<Prefer> for Preference {
+    fn from(value: Prefer) -> Self {
+        match value {
+            Prefer::Source => Self::Source,
+            Prefer::Target => Self::Target,
+            Prefer::Newest => Self::Newest,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "linker")]
@@ -15,12 +37,16 @@ mod output;
 #[command(after_help = "Common workflow:
   linker add ~/Documents/Notes ~/Library/Mobile\\ Documents/com~apple~CloudDocs/MyNotes --name notes
   linker sync notes
+  linker check notes
+  linker repair notes
   linker status
 
 Important:
   remove stops tracking but keeps both source and target directories.
   delete stops tracking and deletes the target directory.
-  The source directory is never deleted by remove or delete.")]
+  The source directory is never deleted by remove or delete.
+  check only reports differences; repair makes both sides match one side, and
+  only --prune may delete anything.")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -66,6 +92,33 @@ enum Command {
         #[arg(help = "Optional item name or internal item id")]
         name: Option<String>,
         #[arg(long, help = "Preview operations without changing sync files or state")]
+        dry_run: bool,
+    },
+    #[command(about = "Report source/target differences without changing anything")]
+    #[command(
+        long_about = "Read-only consistency audit for all items or one named item. Both directories are scanned with the same controls, control rules and no-follow file access that sync uses, so every reported difference is one sync would also see. Reported classes: content_differs (both sides present with different content), source_only, target_only, type_conflict (a file on one side where the other side has a directory, which makes sync fail that association), ignored_target_content and unsupported_entry (reported but never synchronized). The exit status is 1 when any blocking difference exists, so the command can gate scripting. Nothing is changed; like sync --dry-run, only synchronization lock files may be created."
+    )]
+    Check {
+        #[arg(help = "Optional item name or internal item id")]
+        name: Option<String>,
+    },
+    #[command(about = "Make both sides match one authoritative side")]
+    #[command(
+        long_about = "Repair all items or one named item so that every divergence matches the chosen side. The default side is the source directory: missing target content is copied from the source, and target content that differs is overwritten with the source version. Content the target has and the source does not is only reported unless --prune is given; --prune also removes ignored target content and replaces the losing side of a type conflict, so it is the only option that can delete data. Baselines are updated for every repaired path, so a later linkerd pass sees a converged association. Use --dry-run to list the operations without changing files or state. Paths that are neither regular files nor directories are never touched."
+    )]
+    Repair {
+        #[arg(help = "Optional item name or internal item id")]
+        name: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = Prefer::Source,
+            help = "Authoritative side for every difference (default: source)"
+        )]
+        prefer: Prefer,
+        #[arg(long, help = "Also remove paths the authoritative side does not have")]
+        prune: bool,
+        #[arg(long, help = "Preview the repair without changing sync files or state")]
         dry_run: bool,
     },
     #[command(about = "Stop syncing an item but keep both directories")]
@@ -218,6 +271,105 @@ fn run() -> Result<()> {
                     summary.pruned_cloud_directories
                 );
                 println!("unchanged: {}", summary.unchanged);
+            }
+        }
+        Command::Check { name } => {
+            let reports = ops::check_items(name.as_deref())?;
+            if reports.is_empty() {
+                println!("no items");
+            }
+            let mut blocked = false;
+            for report in &reports {
+                for warning in &report.warnings {
+                    eprintln!("warning: {warning}");
+                }
+                println!("check: {}", output::label(&report.item_name));
+                println!("source: {}", output::label(&report.source_path));
+                println!("target: {}", output::label(&report.target_path));
+                println!("identical: {}", report.identical);
+                if report.entries.is_empty() {
+                    println!("consistent");
+                } else {
+                    let rows = report
+                        .entries
+                        .iter()
+                        .map(|entry| {
+                            [
+                                entry.class.clone(),
+                                entry.side.clone(),
+                                entry.path.display().to_string(),
+                                entry.detail.clone(),
+                            ]
+                        })
+                        .collect();
+                    print!(
+                        "{}",
+                        output::table(["CLASS", "SIDE", "PATH", "DETAIL"], rows)
+                    );
+                    println!("divergent: {}", report.divergent());
+                    println!("advisory: {}", report.advisory());
+                }
+                if !report.clean() {
+                    blocked = true;
+                }
+            }
+            if blocked {
+                std::process::exit(1);
+            }
+        }
+        Command::Repair {
+            name,
+            prefer,
+            prune,
+            dry_run,
+        } => {
+            let reports = ops::repair_items(name.as_deref(), prefer.into(), prune, dry_run)?;
+            if reports.is_empty() {
+                println!("no items");
+            }
+            for report in &reports {
+                for warning in &report.warnings {
+                    eprintln!("warning: {warning}");
+                }
+                println!("repair: {}", output::label(&report.item_name));
+                println!("source: {}", output::label(&report.source_path));
+                println!("target: {}", output::label(&report.target_path));
+                println!("authoritative side: {}", report.preference);
+                println!(
+                    "prune: {}  dry run: {}",
+                    yes_no(report.prune),
+                    yes_no(report.dry_run)
+                );
+                println!("identical: {}", report.identical);
+                if report.planned.is_empty() && report.skipped.is_empty() {
+                    println!("consistent");
+                } else {
+                    let rows = report
+                        .planned
+                        .iter()
+                        .chain(report.skipped.iter())
+                        .map(|action| {
+                            [
+                                action.action.clone(),
+                                action.side.clone(),
+                                action.path.display().to_string(),
+                                action.note.clone(),
+                            ]
+                        })
+                        .collect();
+                    print!(
+                        "{}",
+                        output::table(["ACTION", "SIDE", "PATH", "NOTE"], rows)
+                    );
+                }
+                println!(
+                    "{}: {}",
+                    if report.dry_run { "planned" } else { "applied" },
+                    report.planned.len()
+                );
+                if !report.skipped.is_empty() {
+                    println!("skipped: {}", report.skipped.len());
+                }
             }
         }
         Command::Remove { name } => {

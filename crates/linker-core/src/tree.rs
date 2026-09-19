@@ -44,6 +44,52 @@ fn open_at(dir: &File, name: &CStr, flags: i32) -> io::Result<File> {
 }
 
 impl Tree {
+    /// Remove a target through pinned parent descriptors, never following root
+    /// or ancestor symlinks. Refuse non-absolute paths and the filesystem root.
+    pub(crate) fn remove_absolute_tree(path: &Path) -> Result<()> {
+        let relative = path
+            .strip_prefix("/")
+            .map_err(|_| io::Error::other("expected absolute target path"))?;
+        // The filesystem root has no parent entry to remove from.
+        let Some(name) = relative.file_name() else {
+            return Err(io::Error::other("refusing to remove the filesystem root").into());
+        };
+        let Some(parent_path) = path.parent() else {
+            return Err(io::Error::other("refusing to remove the filesystem root").into());
+        };
+        let root = Self::open(Path::new("/"))?;
+        let (dir, _) = match root.parent(relative, false) {
+            Ok(parent) => parent,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        let parent = Self {
+            dir,
+            path: parent_path.to_path_buf(),
+        };
+        parent.remove_recursive(Path::new(name))
+    }
+
+    pub(crate) fn remove_recursive(&self, relative: &Path) -> Result<()> {
+        match self.kind(relative)? {
+            Some(Kind::Directory) => {
+                let child = Self {
+                    dir: self.directory(relative, false)?,
+                    path: self.path.join(relative),
+                };
+                for name in child.entries(Path::new(""))? {
+                    child.remove_recursive(Path::new(&name))?;
+                }
+                self.remove(relative, true)?;
+            }
+            Some(_) => {
+                self.remove(relative, false)?;
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
     /// Create a previously resolved absolute directory without following any
     /// ancestor that was swapped to a symlink after validation.
     pub(crate) fn create_directory_path(path: &Path) -> Result<()> {
@@ -287,6 +333,13 @@ mod tests {
         assert!(!base.join("moved/new").exists());
         Tree::create_directory_path(&base.join("safe/new/nested")).unwrap();
         assert!(base.join("safe/new/nested").is_dir());
+    }
+
+    #[test]
+    fn removal_refuses_the_filesystem_root_and_relative_paths() {
+        assert!(Tree::remove_absolute_tree(Path::new("/")).is_err());
+        assert!(Tree::remove_absolute_tree(Path::new("//")).is_err());
+        assert!(Tree::remove_absolute_tree(Path::new("relative/path")).is_err());
     }
 
     #[test]

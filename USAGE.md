@@ -1,16 +1,12 @@
 # Linker Command Usage
 
-Linker links a source directory to a target parent directory.
+Linker links a source directory to a exact target directory.
 
 ```bash
-linker add <source-directory> <target-parent-directory>
+linker add <source-directory> <target-directory> [--name <name>]
 ```
 
-If the source directory is `~/Documents/Notes`, the item name is `Notes`, and the target directory becomes:
-
-```text
-<target-parent-directory>/Notes/
-```
+The second argument is used directly; Linker never appends the source or record name. The record name defaults to the source directory basename, or can be set with `--name`.
 
 There is no `linker init` step and no global Linker workspace.
 
@@ -44,18 +40,37 @@ curl -fsSL https://raw.githubusercontent.com/SleeplessCatty/Linker/main/scripts/
 ## Add a Directory
 
 ```bash
-linker add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
+linker add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs/Notes
 ```
 
-This creates or reuses:
+This creates the following exact directory if missing, or accepts it only if it is empty:
 
 ```text
 ~/Library/Mobile Documents/com~apple~CloudDocs/Notes/
 ```
 
-The item name is always the source directory name. Names must be unique; Linker rejects a second association named `Notes`.
+To use different folder names and disambiguate same-named sources:
 
-The source and target directories must be separate. Linker rejects associations where one side contains the other.
+```bash
+linker add ~/work/Notes ~/Cloud/WorkNotes --name work-notes
+linker add ~/personal/Notes ~/Cloud/PersonalNotes --name personal-notes
+linker sync work-notes
+```
+
+`--name` changes only the association name used by `list`, `sync`, `remove`, and `delete`; it does not rename either directory. Without it, Linker uses the basename of the canonical source path. It does not rename an existing record.
+
+### Add validation and failure behavior
+
+- The source must be an existing directory. Both arguments are required; paths with spaces must be quoted or shell-escaped. Relative paths and `~` are supported.
+- The target must be missing or a completely empty directory. **Every entry counts**, including `.DS_Store`, `.gitignore`, ignored files, empty subdirectories, and broken symlinks. A nonempty target fails with its path and a reason; Linker does not merge, clear, or overwrite existing contents to make it acceptable.
+- A target that is a regular file or a symbolic link is rejected. Existing ancestor symlinks are resolved before checking separation; creating missing directories does not follow ancestors replaced by symlinks.
+- Source and target must be separate: neither may contain the other. Neither path may overlap either side of an existing association, or Linker's Application Support directory.
+- New record names must be unique (ASCII case-insensitive) and must not alias an existing record ID. Names allow Unicode and internal spaces, but not leading/trailing whitespace, control characters, `/`, `\`, `.`, `..`, or reserved `.linker`. The maximum is 250 UTF-8 bytes. Existing orphan manifests are not overwritten.
+- Registration checks are serialized across processes. A new item lock prevents the daemon from syncing while initial sync or rollback is in progress. Initial sync only copies source files to the empty target, applying source `.gitignore` rules; it cannot copy back to or delete the source. Later sync is bidirectional.
+- Validation failures occur before creating target directories or registering the item. State setup/migration and lock files can still be created during registry checks. Once directory creation/initial sync begins, I/O failures can leave created directories or copied files. A caught initial-sync failure removes the new association, its baselines and manifest; it **keeps** the source and partial target copies. Rollback failures are explicitly reported. Inspect those copies before choosing an empty target for retry.
+- This is not crash-atomic filesystem storage. Process termination, disk failure, or an external writer racing with `add` can require manual inspection; registration locks coordinate Linker processes, not iCloud or other applications.
+
+**Breaking CLI change:** old commands that supplied a target parent must append the desired folder explicitly. A nonempty parent now fails; an empty parent is treated as the exact target, not automatically corrected. Existing stored associations are unchanged. Re-adding a removed association to its retained nonempty target is intentionally rejected; there is no force/merge option.
 
 ## Ignore Files
 
@@ -190,12 +205,14 @@ This keeps the source directory, but deletes:
 - the target directory
 - the matching local manifest
 
+Known failure limitation: if target removal fails partway (for example, `Directory not empty` while iCloud modifies the tree), registration and baselines may remain. A later sync can interpret partial target deletions as source deletions. Stop the daemon and inspect both sides before recovery; do not assume a failed `delete` is harmless or that re-adding fixes it. This outstanding delete failure-protection issue is separate from the guarded `add` workflow.
+
 ## Mobile Editing
 
-Use an iCloud Drive folder as the target parent if you want mobile access:
+Use a missing or empty directory inside iCloud Drive as the exact target if you want mobile access:
 
 ```bash
-linker add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
+linker add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs/Notes
 ```
 
 Then open `Notes` in iCloud Drive on iPhone or iPad. Edits made there are synced back to the source directory by the daemon.
@@ -208,9 +225,9 @@ Sync tracks regular file contents, not empty-directory history. Parent directori
 
 ## Common Issues
 
-If a name is rejected, another association with the same source directory name already exists. Rename the source directory or remove the old association.
+If a name is rejected, check its syntax and choose a unique `--name`; you do not need to rename the source directory.
 
-If a target path is rejected, make sure the target parent is outside the source directory.
+If a target path is rejected, check that it is the exact missing/empty destination, not a nonempty parent. Check hidden entries and path overlaps. Do not delete existing contents just to bypass this protection.
 
 If a file does not come back after removing a rule, run:
 

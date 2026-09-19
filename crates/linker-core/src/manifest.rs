@@ -47,7 +47,9 @@ pub fn write_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
 
 pub(crate) fn write_json_atomic(path: &Path, value: &serde_json::Value) -> Result<()> {
     use std::io::Write;
-    let tmp = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+    // Keep the temporary basename independent of the record name so a valid
+    // near-limit name does not exceed the filesystem component length limit.
+    let tmp = path.with_file_name(format!(".linker-manifest-{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| -> Result<()> {
         let mut file = fs::OpenOptions::new()
             .write(true)

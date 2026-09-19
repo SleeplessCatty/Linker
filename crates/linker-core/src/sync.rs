@@ -430,7 +430,7 @@ fn apply(
 pub fn sync_item(db: &StateDb, item: &Item) -> Result<SyncSummary> {
     let _lock = db.lock_item(&item.id)?;
     let item = db.get_item(&item.id)?;
-    let result = run_sync(db, &item);
+    let result = run_sync(db, &item, false);
     if let Err(error) = &result {
         db.mark_item_error(&item.id, &error.to_string())?;
     }
@@ -445,12 +445,17 @@ fn previous(db: &StateDb, item: &Item) -> Result<BTreeMap<String, StoredFileStat
         .collect())
 }
 
-fn run_sync(db: &StateDb, item: &Item) -> Result<SyncSummary> {
+/// Caller holds the new item's lock through publication and any rollback.
+pub(crate) fn sync_initial_item(db: &StateDb, item: &Item) -> Result<SyncSummary> {
+    run_sync(db, item, true)
+}
+
+fn run_sync(db: &StateDb, item: &Item, initial: bool) -> Result<SyncSummary> {
     if !Path::new(&item.local_path).exists() {
         return Err(LinkerError::PathMissing(item.local_path.clone().into()));
     }
     let cloud = Path::new(&item.cloud_path);
-    if !cloud.exists() {
+    if !initial && !cloud.exists() {
         fs::create_dir_all(if item.item_type == "file" {
             cloud.parent().unwrap()
         } else {
@@ -458,8 +463,24 @@ fn run_sync(db: &StateDb, item: &Item) -> Result<SyncSummary> {
         })?;
     }
     let roots = Roots::open(item)?;
+    if initial && !roots.cloud.entries(Path::new(""))?.is_empty() {
+        return Err(LinkerError::TargetNotEmpty(cloud.into()));
+    }
     let plan = Plan::build(&roots, &previous(db, item)?)?;
     plan.verify_controls(&roots)?;
+    if initial
+        && (!roots.cloud.entries(Path::new(""))?.is_empty()
+            || !plan.prune.is_empty()
+            || plan.controls.iter().chain(&plan.files).any(|op| {
+                op.cloud.is_some()
+                    || !matches!(
+                        op.decision,
+                        Decision::CopyLocalToCloud | Decision::Noop | Decision::Deleted
+                    )
+            }))
+    {
+        return Err(LinkerError::TargetNotEmpty(cloud.into()));
+    }
     let mut summary = SyncSummary {
         item_name: item.name.clone(),
         copied_local_to_cloud: 0,

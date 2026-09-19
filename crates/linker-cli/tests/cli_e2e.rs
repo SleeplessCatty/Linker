@@ -79,7 +79,7 @@ fn add_list_status_and_remove_item_keep_source_and_target() {
         .args([
             "add",
             source.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("demo").to_str().unwrap(),
         ])
         .assert()
         .success()
@@ -147,7 +147,7 @@ fn list_displays_multiple_items_in_a_single_table() {
         .args([
             "add",
             alpha.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("alpha").to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -156,7 +156,7 @@ fn list_displays_multiple_items_in_a_single_table() {
         .args([
             "add",
             beta.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("beta").to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -200,7 +200,7 @@ fn dry_run_shows_effective_rule_cleanup_without_changing_files_or_state() {
         .args([
             "add",
             source.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("demo").to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -251,7 +251,7 @@ fn dry_run_reports_both_deletion_directions_and_target_to_source_copy() {
         .args([
             "add",
             source.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("demo").to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -291,7 +291,7 @@ fn dry_run_missing_target_fails_without_creating_it() {
         .args([
             "add",
             source.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("demo").to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -337,7 +337,7 @@ fn dry_run_control_error_does_not_update_last_error_or_copy_files() {
         .args([
             "add",
             source.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("demo").to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -368,7 +368,7 @@ fn delete_removes_target_but_keeps_source() {
         .args([
             "add",
             source.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("demo").to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -399,18 +399,24 @@ fn only_gitignore_controls_initial_sync() {
     );
     write_file(&source.join("cache/data"), "source cache");
     write_file(&source.join(".env"), "included unless explicitly ignored");
-    write_file(&sandbox.item_path("demo").join("target.log"), "target only");
     sandbox
         .linker()
         .args([
             "add",
             source.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("demo").to_str().unwrap(),
         ])
         .assert()
         .success()
         .stderr(pred_contains(".gitignore:3: skipped"))
-        .stdout(pred_contains("initial sync deleted target: 1"));
+        .stdout(pred_contains("initial sync deleted target: 0"));
+    write_file(&sandbox.item_path("demo").join("target.log"), "target only");
+    sandbox
+        .linker()
+        .args(["sync", "demo"])
+        .assert()
+        .success()
+        .stdout(pred_contains("deleted target: 1"));
     assert!(source.join("keep.log").exists());
     assert!(!sandbox.item_path("demo").join("keep.log").exists());
     assert!(!sandbox.item_path("demo").join("cache").exists());
@@ -465,7 +471,7 @@ fn duplicate_directory_name_is_rejected() {
         .args([
             "add",
             first.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("demo").to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -475,7 +481,7 @@ fn duplicate_directory_name_is_rejected() {
         .args([
             "add",
             second.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("another-demo").to_str().unwrap(),
         ])
         .assert()
         .failure()
@@ -509,7 +515,7 @@ fn editing_gitignore_prunes_target_and_removing_it_restores_source_content() {
         .args([
             "add",
             source.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("demo").to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -542,7 +548,7 @@ fn sync_copies_both_directions_and_latest_modified_wins() {
         .args([
             "add",
             source.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("demo").to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -590,7 +596,7 @@ fn sync_deletes_inner_file_from_other_side() {
         .args([
             "add",
             source.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("demo").to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -639,7 +645,7 @@ fn errors_include_actionable_hints() {
         .args([
             "add",
             sandbox.sources.join("nope").to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("demo").to_str().unwrap(),
         ])
         .assert()
         .failure()
@@ -652,7 +658,7 @@ fn errors_include_actionable_hints() {
         .args([
             "add",
             file.to_str().unwrap(),
-            sandbox.target_parent.to_str().unwrap(),
+            sandbox.item_path("demo").to_str().unwrap(),
         ])
         .assert()
         .failure()
@@ -668,7 +674,7 @@ fn errors_include_actionable_hints() {
         .assert()
         .failure()
         .stderr(pred_contains(
-            "choose a target parent outside the source directory",
+            "choose separate source and target directories",
         ));
 }
 
@@ -701,7 +707,7 @@ fn help_describes_core_commands_and_rule_behavior() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(pred_contains("target parent directory"))
+        .stdout(pred_contains("target directory"))
         .stdout(pred_contains("remove stops tracking"))
         .stdout(pred_contains("delete stops tracking"));
 
@@ -712,8 +718,9 @@ fn help_describes_core_commands_and_rule_behavior() {
         .success()
         .stdout(pred_contains("Source directory to sync"))
         .stdout(pred_contains(
-            "Parent directory where the target directory will be created",
+            "Exact target directory; must be absent or empty",
         ))
+        .stdout(pred_contains("--name"))
         .stdout(pred_contains("Only .gitignore"))
         .stdout(pred_contains("matching target files are deleted"))
         .stdout(predicates::str::contains("--ignore-file").not().from_utf8())

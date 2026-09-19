@@ -17,6 +17,10 @@ This metadata backup does **not** back up user files or old binaries. Before ins
 
 User `.gitignore` text is never automatically rewritten. Unsupported patterns warn and are skipped; valid patterns can remove target copies that an unsupported negation previously protected. Review [USAGE.md](USAGE.md#ignore-files) before enabling the new daemon. Version 0.3.0 does not publish a GitHub Release in this change.
 
+## Exact-target and optional-name CLI update
+
+New adds use `linker add <source-directory> <target-directory> [--name <name>]`. Update scripts that passed a parent directory: include the final desired directory name. Nonempty destinations now fail; an empty old parent would become the exact destination. Existing schema-2 associations keep their stored names, paths and baselines; do not remove/re-add them for this update. No schema migration or GitHub Release is required for this CLI change. Installation is a separate explicit operation from building/testing the checkout.
+
 ## Historical Pre-0.2 Clean Cutover
 
 Installing Linker 0.2 performs a clean cutover from any pre-0.2 installation:
@@ -26,7 +30,7 @@ Installing Linker 0.2 performs a clean cutover from any pre-0.2 installation:
 - deletes the legacy Application Support state, including associations, manifests, rules, logs, and cached binaries
 - never deletes configured source directories or target directories
 
-Legacy associations are not migrated. Add them again with `linker add` after installation. The installer also refuses to overwrite unrelated files or links already named `linker` or `linkerd`.
+Legacy associations are not migrated. New `add` accepts only missing or empty exact target directories; a retained nonempty target cannot be reattached through it. Preserve and reconcile existing data before choosing a new empty destination. The installer also refuses to overwrite unrelated files or links already named `linker` or `linkerd`.
 
 Cleanup is fail-closed. It validates physical paths, rejects symlink ancestry and unrecognized legacy content, and uses the legacy database only to veto deletion when a recorded source or target is inside the legacy state root. It never deletes paths obtained from that database. The old state is removed only after the new daemon starts successfully; otherwise it remains available for recovery.
 
@@ -46,7 +50,7 @@ The script:
 - creates `~/Library/LaunchAgents/com.linker.linkerd.plist`
 - starts the daemon with `launchctl`
 
-Linker does not need a global workspace initialization step. Add each directory by passing a source directory and a target parent directory.
+Linker does not need a global workspace initialization step. Add each directory by passing a source directory and a exact target directory.
 
 Creating command links under `/usr/local/bin` may ask for your administrator password because that directory is usually owned by `root`.
 
@@ -76,7 +80,7 @@ For an installation with working command links, update from the intended local c
 2. Stop the loaded service with `launchctl bootout gui/$(id -u)/com.linker.linkerd`. Confirm it stopped; investigate failures rather than ignoring them.
 3. Back up the Application Support directory and LaunchAgent plist outside the sync trees. For already-upgraded state, run `linker sync --dry-run` while stopped and back up any files that the next pass could overwrite/delete.
 4. Run `./scripts/install.sh --no-link`. This rebuilds and replaces **both** `linker` and `linkerd`, writes the plist and restarts the service. Existing `/usr/local/bin` symlinks continue to work; `--no-link` does not remove them and no new PATH entry is needed.
-5. Verify `linker --version`, `linker list`, `linker doctor`, `linker sync --dry-run`, and `launchctl print gui/$(id -u)/com.linker.linkerd`.
+5. Verify `linker --version`, `linker add --help` (exact target and `--name`), `linker list`, `linker doctor`, `linker sync --dry-run`, and `launchctl print gui/$(id -u)/com.linker.linkerd`. The version remains 0.3.0 for this checkout update, so the version string alone does not identify the new CLI behavior.
 
 This preserves schema-2 associations and file state. Keep the backup until verification is complete. If installation fails, stop any newly started daemon before restoring the saved binaries/state/plist and restarting the previous service. Updating the binaries is separate from committing or pushing repository changes; it does not create a GitHub Release.
 

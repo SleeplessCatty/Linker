@@ -13,7 +13,8 @@ use crate::Result;
 #[derive(Debug, Clone)]
 pub struct AddOptions {
     pub source_path: String,
-    pub target_parent_path: String,
+    pub target_path: String,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -25,54 +26,132 @@ pub struct AddOutcome {
 
 pub fn add_item(options: AddOptions) -> Result<AddOutcome> {
     let local_path = paths::canonical_existing_dir(&options.source_path)?;
-    let target_parent = paths::canonical_dir_create(&options.target_parent_path)?;
-    let name = paths::default_item_name(&local_path)?;
-    paths::validate_item_name(&name)?;
+    let name = match options.name {
+        Some(name) => name,
+        None => paths::default_item_name(&local_path)?,
+    };
+    paths::validate_new_item_name(&name)?;
+    let cloud_path = paths::resolve_target_dir(&options.target_path)?;
+    let local_path_string = local_path
+        .to_str()
+        .ok_or_else(|| std::io::Error::other("source path must be UTF-8"))?
+        .to_owned();
+    let cloud_path_string = cloud_path
+        .to_str()
+        .ok_or_else(|| std::io::Error::other("target path must be UTF-8"))?
+        .to_owned();
+    validate_association_paths(&local_path, &cloud_path)?;
+    paths::require_empty_target(&cloud_path)?;
+    let support = paths::resolve_target_dir(&paths::app_support_dir()?.to_string_lossy())?;
+    for path in [&local_path, &cloud_path] {
+        if overlaps(path, &support) {
+            return Err(crate::LinkerError::InvalidAssociation(
+                "sync paths must not overlap Linker's application state directory".into(),
+            ));
+        }
+    }
 
     paths::ensure_base_dirs()?;
-
     let mut db = StateDb::open(&paths::state_db_path()?)?;
-    if db.name_exists(&name)? {
+    // Serialize registration checks and publication across concurrent add commands.
+    let _registration_lock = db.lock_add()?;
+    let items = db.list_items()?;
+    if items
+        .iter()
+        .any(|item| item.name.eq_ignore_ascii_case(&name) || item.id == name)
+    {
         return Err(crate::LinkerError::ItemExists(name));
     }
-
-    let id = Uuid::new_v4().to_string();
-    let cloud_path = paths::target_item_path(&target_parent, &name)?;
-    validate_association_paths(&local_path, &cloud_path)?;
-    if cloud_path.exists() && !cloud_path.is_dir() {
-        return Err(crate::LinkerError::NotDirectory(cloud_path));
+    for item in &items {
+        for existing in [&item.local_path, &item.cloud_path] {
+            let existing = match Path::new(existing).canonicalize() {
+                Ok(path) => path,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    paths::resolve_target_dir(existing)?
+                }
+                Err(error) => return Err(error.into()),
+            };
+            if overlaps(&local_path, &existing) || overlaps(&cloud_path, &existing) {
+                return Err(crate::LinkerError::InvalidAssociation(format!(
+                    "path overlaps existing association {:?}: {}",
+                    item.name,
+                    existing.display()
+                )));
+            }
+        }
     }
     let manifest_path = paths::app_manifests_dir()?.join(format!("{name}.json"));
-
-    fs::create_dir_all(&cloud_path)?;
-
+    match fs::symlink_metadata(&manifest_path) {
+        Ok(_) => {
+            return Err(crate::LinkerError::InvalidAssociation(format!(
+                "manifest already exists; refusing to overwrite: {}",
+                manifest_path.display()
+            )))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    paths::require_empty_target(&cloud_path)?;
+    crate::tree::Tree::create_directory_path(&cloud_path)?;
+    // Reject a changed ancestor/root before publishing or copying any contents.
+    if cloud_path.canonicalize()? != cloud_path || local_path.canonicalize()? != local_path {
+        return Err(crate::LinkerError::InvalidAssociation(
+            "directory changed during add; retry after checking both paths".into(),
+        ));
+    }
+    paths::require_empty_target(&cloud_path)?;
+    let mut id = Uuid::new_v4().to_string();
+    while items.iter().any(|item| item.name == id || item.id == id) {
+        id = Uuid::new_v4().to_string();
+    }
+    let _item_lock = db.lock_item(&id)?;
     let manifest = Manifest::new(
         id.clone(),
         name.clone(),
-        "directory".to_string(),
-        local_path.to_string_lossy().to_string(),
-        cloud_path.to_string_lossy().to_string(),
+        "directory".into(),
+        local_path_string.clone(),
+        cloud_path_string.clone(),
     );
     write_manifest(&manifest_path, &manifest)?;
 
-    let local_path_string = local_path.to_string_lossy().to_string();
-    let cloud_path_string = cloud_path.to_string_lossy().to_string();
+    let result = (|| {
+        db.insert_item(NewItem {
+            id: &id,
+            name: &name,
+            item_type: "directory",
+            local_path: &local_path_string,
+            cloud_path: &cloud_path_string,
+        })?;
+        let item = db.get_item(&id)?;
+        let sync_summary = crate::sync::sync_initial_item(&db, &item)?;
+        Ok(AddOutcome {
+            item,
+            manifest_path: manifest_path.to_string_lossy().to_string(),
+            sync_summary,
+        })
+    })();
+    if let Err(error) = result {
+        // Do not recursively delete partially copied data on rollback. The item
+        // lock prevents the daemon from observing a failed initial sync as live.
+        db.rollback_add(&id).map_err(|cleanup| {
+            std::io::Error::other(format!(
+                "add failed: {error}; registration rollback also failed: {cleanup}"
+            ))
+        })?;
+        remove_file_if_exists(&manifest_path).map_err(|cleanup| {
+            std::io::Error::other(format!(
+                "add failed: {error}; association removed but manifest cleanup failed: {cleanup}"
+            ))
+        })?;
+        return Err(std::io::Error::other(format!(
+            "add failed; new association removed, source kept; target may contain partial copies: {error}"
+        )).into());
+    }
+    result
+}
 
-    db.insert_item(NewItem {
-        id: &id,
-        name: &name,
-        item_type: "directory",
-        local_path: &local_path_string,
-        cloud_path: &cloud_path_string,
-    })?;
-
-    let item = db.get_item(&name)?;
-    let sync_summary = crate::sync::sync_item(&db, &item)?;
-    Ok(AddOutcome {
-        item,
-        manifest_path: manifest_path.to_string_lossy().to_string(),
-        sync_summary,
-    })
+fn overlaps(first: &Path, second: &Path) -> bool {
+    first.starts_with(second) || second.starts_with(first)
 }
 
 pub fn list_items() -> Result<Vec<Item>> {

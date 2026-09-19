@@ -4,13 +4,13 @@
 
 Linker is a lightweight personal directory sync tool for macOS.
 
-It lets a user link an existing source directory to a target parent directory, then keeps the resulting target directory synced automatically. If the target parent is inside iCloud Drive, the synced directory is easy to view and edit on iPhone or iPad.
+It lets a user link an existing source directory to a exact target directory, then keeps the resulting target directory synced automatically. If the target is inside iCloud Drive, the synced directory is easy to view and edit on iPhone or iPad.
 
 ## What Matters Most
 
 MVP priorities:
 
-1. Add a source directory and target parent directory.
+1. Add a source directory and exact target directory.
 2. Keep the source and target directories automatically synced in the background.
 3. Let the user manage ignores through `.gitignore`.
 4. Use latest-modified-wins to resolve competing changes automatically.
@@ -22,7 +22,7 @@ Everything else is secondary unless required to make those flows reliable.
 The user adds an association:
 
 ```bash
-linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs
+linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs/demo
 ```
 
 Linker derives:
@@ -46,16 +46,18 @@ Linker does not move the user's source directory and does not use symlinks or fi
 ### Add Directory
 
 ```bash
-linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs
+linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs/demo
 ```
 
 Result:
 
 - creates a Linker item named `demo`
-- creates or reuses the target directory
+- uses the exact target path; creates it if missing, accepts it only if empty, rejects all preexisting entries without clearing them
 - creates a local schema-2 manifest under Application Support
 - performs initial sync
 - daemon keeps future changes synced
+
+`--name` optionally sets a unique record name independent of both folder names, for example `linker add ~/work/demo ~/Cloud/work-demo --name work-demo`. Without it, the source basename is used. Same-named source directories require different record names and separate non-overlapping targets. Validation and rollback boundaries are documented in [USAGE.md](USAGE.md#add-a-directory).
 
 ### Manage Ignore Files
 
@@ -107,12 +109,12 @@ Stops syncing the item and removes local Linker association metadata. It keeps t
 linker delete demo
 ```
 
-Stops syncing the item, removes local Linker association metadata, and deletes the target directory. It never deletes the source directory.
+Stops syncing the item, removes local Linker association metadata, and deletes the target directory. It does not directly delete the source directory. A known partial-delete failure can leave registration/baselines active and allow subsequent sync to propagate deletions; stop the daemon and inspect before recovery. See [USAGE.md](USAGE.md#remove-vs-delete).
 
 ## MVP Command Set
 
 ```text
-linker add <source-directory> <target-parent-directory>
+linker add <source-directory> <target-directory> [--name <name>]
 linker remove <name>
 linker delete <name>
 linker list
@@ -139,13 +141,13 @@ Linker is not trying to be:
 A user can add a folder:
 
 ```bash
-linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs
+linker add ~/code/demo ~/Library/Mobile\ Documents/com~apple~CloudDocs/demo
 ```
 
 Then:
 
 - keep working in `~/code/demo`
 - see files directly in the target directory
-- edit target files from iPhone or iPad if the target parent is iCloud Drive
+- edit target files from iPhone or iPad if the target is inside iCloud Drive
 - manage the supported basic patterns through `.gitignore`
 - rely on latest-modified-wins without managing conflicts manually

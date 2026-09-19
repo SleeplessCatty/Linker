@@ -35,7 +35,7 @@ Do not commit generated or machine-local files:
 - local logs
 - installed binaries under `~/Library/Application Support/Linker/bin/`
 - runtime state under `~/Library/Application Support/Linker/`
-- user sync content under source directories and target parent directories
+- user sync content under source directories and target directories
 
 ## Pre-Push Checklist
 

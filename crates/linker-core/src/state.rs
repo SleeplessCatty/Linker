@@ -251,6 +251,18 @@ impl StateDb {
         crate::lock::acquire(&self.directory.join("locks"), &format!("item:{id}"))
     }
 
+    pub(crate) fn lock_add(&self) -> Result<File> {
+        crate::lock::acquire(&self.directory.join("locks"), "add-registry")
+    }
+
+    pub(crate) fn rollback_add(&mut self, id: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM file_states WHERE item_id = ?1", [id])?;
+        tx.execute("DELETE FROM items WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn forget_file_state(&self, item_id: &str, relative_path: &str) -> Result<()> {
         self.conn.execute(
             "DELETE FROM file_states WHERE item_id = ?1 AND relative_path = ?2",

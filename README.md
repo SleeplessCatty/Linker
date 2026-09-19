@@ -4,23 +4,30 @@ Linker is a lightweight macOS directory sync tool.
 
 Version 0.3.0 focuses on three practical needs:
 
-1. Link a source directory to a target parent directory and keep it synced.
+1. Link a source directory to a exact target directory and keep it synced.
 2. Manage ignores through in-tree `.gitignore` files.
 3. Resolve changes automatically by using the latest modified file.
 
 There is no global Linker workspace. Add a directory by passing both sides:
 
 ```bash
-linker add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
+linker add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs/Notes
 ```
 
-Linker creates or reuses:
+The second argument is the exact destination, not its parent. Linker creates a missing destination or accepts an existing **empty** directory:
 
 ```text
 ~/Library/Mobile Documents/com~apple~CloudDocs/Notes/
 ```
 
-The source directory name, `Notes`, is the item name used by `linker sync`, `linker remove`, and `linker delete`.
+The record name defaults to the source directory name (`Notes`). Use `--name` for sources sharing a basename; the record name does not change either path:
+
+```bash
+linker add ~/work/Notes ~/Cloud/WorkNotes --name work-notes
+linker add ~/personal/Notes ~/Cloud/PersonalNotes --name personal-notes
+```
+
+Existing nonempty destinations fail without merging or deleting their contents, including hidden files or empty subdirectories. See [add safety and failure behavior](USAGE.md#add-a-directory). Existing associations keep their stored paths and names.
 
 Linker metadata is stored locally under:
 
@@ -32,7 +39,7 @@ Linker metadata is stored locally under:
 └── backups/
 ```
 
-No Linker control directory is written into the target parent directory, so iCloud Drive stays readable on mobile devices.
+No Linker control directory is written into the exact target directory, so iCloud Drive stays readable on mobile devices.
 
 ## Inspect and Preview
 

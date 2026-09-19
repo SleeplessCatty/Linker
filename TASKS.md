@@ -8,7 +8,7 @@
 - Sync model: bidirectional mirror copy between source directory and target directory
 - Conflict behavior: latest modified file wins
 - First implementation order: manual sync before daemon auto sync
-- Source directories are never deleted by `remove` or `delete`
+- `remove` preserves both trees; `delete` must preserve source data (partial-failure protection remains outstanding below)
 
 ## Phase 1: CLI, State, Manifest
 
@@ -18,10 +18,10 @@ Status: completed
 - [x] Create `linker` CLI binary
 - [x] Create core library for paths, manifest, and state
 - [x] Initialize SQLite state database
-- [x] Implement `linker add <source-directory> <target-parent-directory>`
+- [x] Implement `linker add <source-directory> <target-directory> [--name <name>]`
 - [x] Implement `linker list` as a Unicode-aligned table with full paths, UTC times and errors
 - [x] Implement `linker status` daemon health
-- [x] Create target directory under the target parent
+- [x] Use exact target path; reject nonempty targets including hidden entries
 - [x] Write manifest under Application Support
 - [x] Write schema-2 manifests; archive retired rule snapshots
 - [x] Verify with workspace tests, format, strict Clippy and compilation checks
@@ -70,7 +70,7 @@ Status: completed
 
 - [x] Remove global workspace initialization
 - [x] Store metadata under Application Support
-- [x] Use source directory names as item names
+- [x] Default to source basename, with independent optional `--name`
 - [x] Reject duplicate item names
 - [x] Defer single-file sync support
 - [x] Implement `linker delete <name>`
@@ -97,7 +97,20 @@ Status: completed
 - [x] Include strict Clippy in CI and the pre-push checklist
 - [x] Keep GitHub Release and stable Homebrew publishing outside this change
 
-The current agreed CLI/ignore/sync scope has implementation and test coverage. Items below remain deliberately deferred, not silently marked complete. No `add --dry-run` interface is introduced: `add` still accepts only the two directory arguments and performs initial sync.
+The current CLI/ignore/sync additions have implementation and test coverage, subject to the failure boundaries in the audit. No `add --dry-run` interface is introduced: `add` accepts two directory arguments plus optional `--name` and performs initial sync.
+
+## Add Safety Acceptance
+
+- [x] Exact target with a different basename and custom/default names
+- [x] Reject hidden files, empty child directories, links, overlaps and invalid/duplicate names
+- [x] Serialize concurrent registration; protect initial sync with the item lock
+- [x] Roll back failed registration/baselines without deleting source or partial target copies
+- [x] Exercise permissions, control failures, injected database errors and concurrent CLI processes
+- [x] Document incompatible positional semantics and unchanged existing records
+
+## Outstanding Defect
+
+- [ ] Make partial `delete` failures safe before later daemon sync can propagate target deletions to the source. Not changed by the add safety work; see USAGE.md.
 
 ## Deferred
 

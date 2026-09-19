@@ -44,6 +44,16 @@ fn open_at(dir: &File, name: &CStr, flags: i32) -> io::Result<File> {
 }
 
 impl Tree {
+    /// Create a previously resolved absolute directory without following any
+    /// ancestor that was swapped to a symlink after validation.
+    pub(crate) fn create_directory_path(path: &Path) -> Result<()> {
+        let relative = path
+            .strip_prefix("/")
+            .map_err(|_| io::Error::other("expected absolute target path"))?;
+        Self::open(Path::new("/"))?.directory(relative, true)?;
+        Ok(())
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let dir = OpenOptions::new()
             .read(true)
@@ -260,6 +270,24 @@ unsafe fn errno_ptr() -> *mut libc::c_int {
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn creation_cannot_follow_a_parent_swapped_to_a_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let root = base.join("root");
+        let outside = base.join("outside");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let resolved = root.join("new/nested");
+        fs::rename(&root, base.join("moved")).unwrap();
+        symlink(&outside, &root).unwrap();
+        assert!(Tree::create_directory_path(&resolved).is_err());
+        assert!(!outside.join("new").exists());
+        assert!(!base.join("moved/new").exists());
+        Tree::create_directory_path(&base.join("safe/new/nested")).unwrap();
+        assert!(base.join("safe/new/nested").is_dir());
+    }
 
     #[test]
     fn removal_cannot_follow_a_parent_swapped_to_a_symlink() {

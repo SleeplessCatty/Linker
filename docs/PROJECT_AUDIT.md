@@ -11,7 +11,7 @@ Linker is a Rust workspace with three crates:
 Runtime state is stored outside the repository:
 
 - local state: `~/Library/Application Support/Linker/`
-- sync targets: selected per association with `linker add <source-directory> <target-parent-directory>`
+- sync targets: selected per association with `linker add <source-directory> <target-directory> [--name <name>]`
 
 ## File Description
 
@@ -44,10 +44,11 @@ Runtime state is stored outside the repository:
 
 ## Agreed Scope Audit (2026-09-19)
 
-Compared PRODUCT.md, SPEC.md, TASKS.md and the approved basic-.gitignore scope against current commands, core modules and regression tests. The previously unchecked public dry-run is now implemented as `sync --dry-run`; `add` retains its two positional arguments. The newly requested list table is implemented, not just documented.
+Compared PRODUCT.md, SPEC.md, TASKS.md and the approved basic-.gitignore scope against current commands, core modules and regression tests. The previously unchecked public dry-run is now implemented as `sync --dry-run`; `add` now treats its second positional argument as an exact missing/empty destination and accepts optional `--name`. The newly requested list table is implemented, not just documented.
 
 | Agreed capability | Implementation / evidence |
 | --- | --- |
+| Add exact target and custom record name | `add_safety.rs`: destination contents/types, names, overlap, permissions, concurrent processes and rollback after partial copies |
 | Add/list/status/doctor/remove/delete | CLI integration tests; table covers multiple/empty items and Unicode/control characters |
 | Basic in-tree ignore subset and control-first sync | `rules.rs`, `sync.rs`; matching, warnings, nested rules, target-only cleanup and reinclusion tests |
 | State-preserving schema-2 upgrade | Migration tests include six associations, retries, partial backups and unknown snapshot preservation |
@@ -58,9 +59,12 @@ Compared PRODUCT.md, SPEC.md, TASKS.md and the approved basic-.gitignore scope a
 | Installation and packaging safety | Five isolated Shell regression suites plus plist/Ruby syntax checks |
 | Documentation | Table examples, preview action semantics, daemon timing, failure boundaries, migration/rollback and deferred scope |
 
-No remaining unchecked implementation item was found in the **agreed scope** after these additions. This is not a claim that every possible failure/race is eliminated. GUI, version history, merge UI, multi-device management, new single-file associations and GitHub/stable-Homebrew publishing remain outside this delivery.
+The requested CLI additions have implementation and test coverage. A separately identified partial-delete failure defect remains outstanding, as documented below. This is not a claim that every possible failure/race is eliminated. GUI, version history, merge UI, multi-device management, new single-file associations and GitHub/stable-Homebrew publishing remain outside this delivery.
 
 ## Known Defects and Risks
+
+- `delete` removes the target before unregistering. Partial target-removal failure retains registration/baselines; later daemon sync can propagate missing target files to the source. Stop the daemon and inspect both trees before recovery. The new `add` rollback does not fix this separate deletion path.
+- The exact-target `add` interface is incompatible with old parent-directory arguments. Existing records are unchanged; retained nonempty targets cannot be re-added. `add` rollback handles caught failures, not process termination or all external-writer races.
 
 - `.gitignore` is a documented basic subset, not full Git compatibility; unsupported lines are skipped. Existing negation patterns must not be assumed to protect target files.
 - Schema 2 migration preserves Linker 0.2 associations/state and archives old manual rules. Metadata backups do not protect user data; back up cleanup candidates before first 0.3 sync.
@@ -77,7 +81,7 @@ No remaining unchecked implementation item was found in the **agreed scope** aft
 
 ## Verification Status
 
-Local verification on 2026-09-19: 54 Rust tests passed (3 output-unit, 20 CLI integration, 5 core-unit, 16 sync integration, 6 migration, 4 daemon integration). Format, strict Clippy, compile/release build, Shell regressions and packaging syntax checks passed. This is local evidence; it does not claim that a remote CI run or GitHub release occurred.
+Local verification on 2026-09-19: 74 Rust tests passed (3 output-unit, 20 CLI integration, 19 add-safety integration, 6 core-unit, 16 sync integration, 6 migration, 4 daemon integration). Format, strict Clippy, compile/release build, Shell regressions and packaging syntax checks passed. This is local evidence; it does not claim that a remote CI run or GitHub release occurred. Add tests use isolated temporary state and directories; live associations are not modified. Permission checks require a non-root test user.
 
 ```bash
 cargo fmt --all --check

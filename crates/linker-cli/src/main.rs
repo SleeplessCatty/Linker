@@ -10,11 +10,11 @@ mod output;
 #[command(version)]
 #[command(about = "Lightweight iCloud-backed selective sync for macOS")]
 #[command(
-    long_about = "Linker links one source directory to one target parent directory. The target directory is created as <target-parent>/<source-directory-name>, and the source directory name is used as the item name for sync, remove, and delete."
+    long_about = "Linker links a source directory directly to the specified target directory, which must be absent or empty. Use --name during add to choose a unique association name; otherwise the source directory basename is used."
 )]
 #[command(after_help = "Common workflow:
-  linker add ~/Documents/Notes ~/Library/Mobile\\ Documents/com~apple~CloudDocs
-  linker sync Notes
+  linker add ~/Documents/Notes ~/Library/Mobile\\ Documents/com~apple~CloudDocs/MyNotes --name notes
+  linker sync notes
   linker status
 
 Important:
@@ -30,13 +30,18 @@ struct Cli {
 enum Command {
     #[command(about = "Add a source directory to Linker")]
     #[command(
-        long_about = "Create or reuse <target-parent>/<source-name> and run bidirectional sync.\n\nOnly .gitignore files inside the association control exclusions. Supported: names, directories, relative paths and single-star wildcards. Unsupported patterns warn and are skipped. Ignored source files are kept; matching target files are deleted. Active .gitignore control files remain synchronized."
+        long_about = "Use the exact target directory; no source name is appended. Create it if absent, or use it only if completely empty (including hidden entries). Nonempty targets, target symlinks and overlapping sync paths are rejected. --name changes only the association name, not either directory. Initial sync copies from source; later sync is bidirectional.\n\nOnly .gitignore files inside the association control exclusions. Supported: names, directories, relative paths and single-star wildcards. Unsupported patterns warn and are skipped. Ignored source files are kept; matching target files are deleted. Active .gitignore control files remain synchronized."
     )]
     Add {
         #[arg(help = "Source directory to sync")]
         source_directory: String,
-        #[arg(help = "Parent directory where the target directory will be created")]
-        target_parent_directory: String,
+        #[arg(help = "Exact target directory; must be absent or empty")]
+        target_directory: String,
+        #[arg(
+            long,
+            help = "Unique association name (default: source directory basename)"
+        )]
+        name: Option<String>,
     },
     #[command(about = "List configured Linker items")]
     #[command(
@@ -102,11 +107,13 @@ fn run() -> Result<()> {
     match cli.command {
         Command::Add {
             source_directory,
-            target_parent_directory,
+            target_directory,
+            name,
         } => {
             let outcome = ops::add_item(AddOptions {
                 source_path: source_directory,
-                target_parent_path: target_parent_directory,
+                target_path: target_directory,
+                name,
             })?;
             for warning in &outcome.sync_summary.warnings {
                 eprintln!("warning: {warning}");
@@ -250,7 +257,7 @@ fn yes_no(value: bool) -> &'static str {
 fn format_error(error: &LinkerError) -> String {
     match error {
         LinkerError::ItemExists(name) => format!(
-            "error: item already exists: {name}\nhelp: item names come from source directory names; rename the source directory or run `linker list` to see existing items."
+            "error: item already exists: {name}\nhelp: choose a unique --name; run `linker list` to see existing associations."
         ),
         LinkerError::ItemNotFound(name) => format!(
             "error: item was not found: {name}\nhelp: run `linker list` to see configured items."
@@ -263,15 +270,21 @@ fn format_error(error: &LinkerError) -> String {
             "error: path is not a directory: {}.",
             path.display()
         ),
+        LinkerError::TargetNotEmpty(path) => format!(
+            "error: target directory is not empty: {}\nhelp: specify the exact new or empty target directory, not its parent; hidden files and subdirectories also count. Existing contents were not removed.", path.display()
+        ),
+        LinkerError::TargetSymlink(path) => format!(
+            "error: target directory must not be a symbolic link: {}\nhelp: choose an explicit new or empty physical directory.", path.display()
+        ),
         LinkerError::NotFile(path) => format!(
             "error: path is not a file: {}.",
             path.display()
         ),
         LinkerError::InvalidName(name) => format!(
-            "error: invalid item name: {name}\nhelp: use a simple file or folder name without path separators; `.linker` is reserved."
+            "error: invalid item name: {name:?}\nhelp: use --name with 1-250 UTF-8 bytes, no path separators, control characters or surrounding whitespace; `.`, `..` and `.linker` are reserved."
         ),
         LinkerError::InvalidAssociation(message) => format!(
-            "error: invalid sync association: {message}\nhelp: choose a target parent outside the source directory."
+            "error: invalid sync association: {message}\nhelp: choose separate source and target directories, outside existing associations and Linker's application state."
         ),
         _ => format!("error: {error}"),
     }

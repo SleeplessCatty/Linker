@@ -4,7 +4,7 @@
 
 Build the smallest reliable version of Linker:
 
-1. `linker add <source-directory> <target-parent-directory>` creates a directory association.
+1. `linker add <source-directory> <target-directory> [--name <name>]` creates a directory association.
 2. A background daemon automatically keeps the source directory and target directory in sync.
 3. Users manage ignores only through in-tree `.gitignore` files.
 4. If both sides differ, the newest modified file wins automatically.
@@ -22,7 +22,7 @@ linkerd
     ^
     | scan/watch/copy
     v
-Target Parent Directory / <source-directory-name>
+Exact Target Directory (user-selected name)
 ```
 
 The sync model is bidirectional mirror copy.
@@ -39,7 +39,7 @@ Linker does not:
 For this command:
 
 ```bash
-linker add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs
+linker add ~/Documents/Notes ~/Library/Mobile\ Documents/com~apple~CloudDocs/Notes
 ```
 
 Linker stores:
@@ -69,7 +69,7 @@ No Linker-specific control directory is created in sync trees. User `.gitignore`
 ## MVP Commands
 
 ```text
-linker add <source-directory> <target-parent-directory>
+linker add <source-directory> <target-directory> [--name <name>]
 linker list
 linker status
 linker sync [name] [--dry-run]
@@ -80,12 +80,20 @@ linker doctor
 
 Command responsibilities:
 
-- `add`: create association, create or reuse target directory, create local metadata, perform initial sync.
+- `add`: register a unique optional name, use the exact target path (missing or empty only), create local metadata, perform a guarded source-to-target initial sync.
 - `list`: render one table, ordered by name, with name/type/status/full paths/UTC last-successful-sync/error columns; use display-width padding, escape control characters and never truncate paths.
 - `status`: show daemon health only.
 - `sync`: run one sync pass manually; `--dry-run` uses a read-only database connection and the same planner, returning operations without applying them or updating sync state.
 - `remove`: stop syncing an item without deleting source or target directories.
 - `delete`: stop syncing and remove the target directory.
+
+## Add Registration Safety
+
+Resolve the source and existing target ancestors before creating directories. Reject nonempty targets (including hidden entries), non-directory targets, final target symlinks, containment between the two sides, overlap with registered source/target trees, and overlap with app state. Names are checked for invalid path/control characters, outer whitespace, reserved names, length, ASCII case collisions and aliases of existing IDs; orphan manifests are not overwritten.
+
+The persistent add-registry process lock covers duplicate/overlap checks, publication and initial sync. Create missing directories with descriptor-relative no-follow traversal; revalidate roots and target emptiness before publication. The per-item lock is held before publishing the new item and until success or rollback, so a daemon cannot sync an incomplete registration. Initial planning verifies an empty target and rejects reverse copies or target cleanup; per-operation checks detect changed files.
+
+On a caught registration/initial-sync error, transactionally remove this new ID and its baselines, then remove its owned manifest. Keep source files and any partial target copies; report rollback failures explicitly. This does not promise crash-atomicity or exclusion of external filesystem writers. Existing stored paths/names and schema 2 do not change. See [USAGE.md](USAGE.md#add-a-directory) for the breaking positional-argument change.
 
 ## Manifest
 
@@ -107,7 +115,7 @@ Each item has one local manifest:
 Notes:
 
 - `id` is the internal stable identity.
-- `name` is the source directory name and must be unique.
+- `name` defaults to the canonical source basename; `--name` supplies an independent unique record name. Neither path is derived from this name.
 - `type` is currently `directory`.
 
 ## State Database
@@ -191,7 +199,8 @@ Item commands:
 
 - `remove` deletes local Linker association state and local metadata, but keeps source and target directories.
 - `delete` deletes local Linker association state, local metadata, and target directory.
-- neither command deletes the source directory.
+- neither command directly deletes the source directory.
+- Known defect: target deletion happens before unregistering; a partial `delete` failure can leave active baselines that later propagate missing target files to the source. Stop the daemon and inspect before recovery. Fixing this separate delete failure path remains outstanding.
 
 Ordinary synchronization tracks files; empty directories are not independently mirrored or removed. Manual all-item sync stops on the first error, without rollback of completed operations; the daemon handles errors per association and continues.
 

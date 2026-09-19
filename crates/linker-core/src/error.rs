@@ -11,6 +11,12 @@ pub enum LinkerError {
     #[error("path is not a directory: {0}")]
     NotDirectory(PathBuf),
 
+    #[error("target directory is not empty: {0}")]
+    TargetNotEmpty(PathBuf),
+
+    #[error("target directory must not be a symbolic link: {0}")]
+    TargetSymlink(PathBuf),
+
     #[error("path is not a file: {0}")]
     NotFile(PathBuf),
 

@@ -108,6 +108,17 @@ The current CLI/ignore/sync additions have implementation and test coverage, sub
 - [x] Exercise permissions, control failures, injected database errors and concurrent CLI processes
 - [x] Document incompatible positional semantics and unchanged existing records
 
+## Shared Sources
+
+- [x] Allow exact canonical directory-source reuse with separate targets/names
+- [x] Keep target/cross-role/nested-source overlap protection and duplicate-pair uniqueness
+- [x] Back up and migrate database to schema 3, preserving records/baselines; retain manifest schema 2
+- [x] Serialize operations on a shared source across CLI/daemon processes
+- [x] Fan out source watcher events to every associated target; test a running daemon
+- [x] Cover fan-out, target edits/deletions, conflict convergence, ignore cleanup/reinclusion and per-record removal/rollback
+- [x] Cover migration preservation/retry/unsafe-backup rejection and daemon startup with multiple targets
+- [x] Document bidirectional propagation, pairwise timing and old-daemon upgrade precautions
+
 ## Outstanding Defect
 
 - [ ] Make partial `delete` failures safe before later daemon sync can propagate target deletions to the source. Not changed by the add safety work; see USAGE.md.

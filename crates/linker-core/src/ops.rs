@@ -63,7 +63,7 @@ pub fn add_item(options: AddOptions) -> Result<AddOutcome> {
         return Err(crate::LinkerError::ItemExists(name));
     }
     for item in &items {
-        for existing in [&item.local_path, &item.cloud_path] {
+        for (is_source, existing) in [(true, &item.local_path), (false, &item.cloud_path)] {
             let existing = match Path::new(existing).canonicalize() {
                 Ok(path) => path,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -71,7 +71,11 @@ pub fn add_item(options: AddOptions) -> Result<AddOutcome> {
                 }
                 Err(error) => return Err(error.into()),
             };
-            if overlaps(&local_path, &existing) || overlaps(&cloud_path, &existing) {
+            let shared_source =
+                is_source && item.item_type == "directory" && local_path == existing;
+            if (!shared_source && overlaps(&local_path, &existing))
+                || overlaps(&cloud_path, &existing)
+            {
                 return Err(crate::LinkerError::InvalidAssociation(format!(
                     "path overlaps existing association {:?}: {}",
                     item.name,
@@ -105,6 +109,7 @@ pub fn add_item(options: AddOptions) -> Result<AddOutcome> {
         id = Uuid::new_v4().to_string();
     }
     let _item_lock = db.lock_item(&id)?;
+    let _source_lock = db.lock_source(&local_path_string)?;
     let manifest = Manifest::new(
         id.clone(),
         name.clone(),
@@ -171,6 +176,7 @@ pub fn remove_item(name: &str) -> Result<Item> {
     let db = StateDb::open(&paths::state_db_path()?)?;
     let found = db.get_item(name)?;
     let _lock = db.lock_item(&found.id)?;
+    let _source_lock = db.lock_source(&found.local_path)?;
     let item = db.remove_item(name)?;
     remove_file_if_exists(&paths::app_manifests_dir()?.join(format!("{}.json", item.name)))?;
     Ok(item)
@@ -180,6 +186,7 @@ pub fn delete_item(name: &str) -> Result<Item> {
     let db = StateDb::open(&paths::state_db_path()?)?;
     let found = db.get_item(name)?;
     let _lock = db.lock_item(&found.id)?;
+    let _source_lock = db.lock_source(&found.local_path)?;
     let item = db.get_item(name)?;
     remove_path_if_exists(Path::new(&item.cloud_path))?;
     remove_file_if_exists(&paths::app_manifests_dir()?.join(format!("{}.json", item.name)))?;

@@ -430,6 +430,7 @@ fn apply(
 pub fn sync_item(db: &StateDb, item: &Item) -> Result<SyncSummary> {
     let _lock = db.lock_item(&item.id)?;
     let item = db.get_item(&item.id)?;
+    let _source_lock = db.lock_source(&item.local_path)?;
     let result = run_sync(db, &item, false);
     if let Err(error) = &result {
         db.mark_item_error(&item.id, &error.to_string())?;
@@ -445,7 +446,7 @@ fn previous(db: &StateDb, item: &Item) -> Result<BTreeMap<String, StoredFileStat
         .collect())
 }
 
-/// Caller holds the new item's lock through publication and any rollback.
+/// Caller holds both item and source locks through publication and rollback.
 pub(crate) fn sync_initial_item(db: &StateDb, item: &Item) -> Result<SyncSummary> {
     run_sync(db, item, true)
 }
@@ -537,6 +538,7 @@ pub struct PreviewOperation {
 pub fn preview_item(db: &StateDb, item: &Item) -> Result<SyncPreview> {
     let _lock = db.lock_item(&item.id)?;
     let item = db.get_item(&item.id)?;
+    let _source_lock = db.lock_source(&item.local_path)?;
     let roots = Roots::open(&item)?;
     let plan = Plan::build(&roots, &previous(db, &item)?)?;
     plan.verify_controls(&roots)?;

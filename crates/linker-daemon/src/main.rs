@@ -53,7 +53,7 @@ fn run() -> Result<()> {
 struct Daemon {
     events: Receiver<notify::Result<Event>>,
     items: Vec<Item>,
-    watched_paths: HashMap<PathBuf, String>,
+    watched_paths: HashMap<PathBuf, BTreeSet<String>>,
     registered_paths: BTreeSet<PathBuf>,
     dirty_items: BTreeSet<String>,
     last_event_at: Option<Instant>,
@@ -130,24 +130,28 @@ impl Daemon {
         }
 
         self.watched_paths
-            .insert(path.to_path_buf(), item_id.to_string());
+            .entry(path.to_path_buf())
+            .or_default()
+            .insert(item_id.to_string());
         Ok(())
     }
 
     fn handle_event(&mut self, event: Event) {
         for path in event.paths {
-            if let Some(item_id) = self.item_for_path(&path) {
-                self.dirty_items.insert(item_id);
+            let items = self.items_for_path(&path);
+            if !items.is_empty() {
+                self.dirty_items.extend(items);
                 self.last_event_at = Some(Instant::now());
             }
         }
     }
 
-    fn item_for_path(&self, path: &Path) -> Option<String> {
+    fn items_for_path(&self, path: &Path) -> BTreeSet<String> {
         self.watched_paths
             .iter()
-            .find(|(root, _)| path.starts_with(root))
-            .map(|(_, item_id)| item_id.clone())
+            .filter(|(root, _)| path.starts_with(root))
+            .flat_map(|(_, item_ids)| item_ids.iter().cloned())
+            .collect()
     }
 
     fn should_flush_dirty(&self) -> bool {
@@ -238,4 +242,30 @@ impl Drop for DaemonLock {
 
 fn to_io_error(error: notify::Error) -> std::io::Error {
     std::io::Error::other(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_events_dirty_every_association_while_target_events_are_specific() {
+        let (_, rx) = mpsc::channel();
+        let mut daemon = Daemon::new(rx);
+        daemon
+            .watched_paths
+            .insert("/source".into(), BTreeSet::from(["a".into(), "b".into()]));
+        daemon
+            .watched_paths
+            .insert("/target-a".into(), BTreeSet::from(["a".into()]));
+        daemon.handle_event(Event::new(notify::EventKind::Any).add_path("/source/new.txt".into()));
+        assert_eq!(daemon.dirty_items, BTreeSet::from(["a".into(), "b".into()]));
+        daemon.dirty_items.clear();
+        daemon
+            .handle_event(Event::new(notify::EventKind::Any).add_path("/target-a/new.txt".into()));
+        assert_eq!(daemon.dirty_items, BTreeSet::from(["a".into()]));
+        assert!(daemon
+            .items_for_path(Path::new("/source-other/new.txt"))
+            .is_empty());
+    }
 }

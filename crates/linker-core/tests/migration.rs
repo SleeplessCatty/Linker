@@ -60,6 +60,137 @@ fn legacy(directory: &Path) {
     }
 }
 
+fn schema_two(directory: &Path) {
+    legacy(directory);
+    let conn = Connection::open(directory.join("state.sqlite")).unwrap();
+    conn.execute_batch(
+        "DROP TABLE exclude_rules; ALTER TABLE items DROP COLUMN rule_path;
+        INSERT INTO schema_migrations VALUES (2, 123);",
+    )
+    .unwrap();
+    for i in 0..6 {
+        let path = directory.join(format!("manifests/item{i}.json"));
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        value["schema_version"] = 2.into();
+        value.as_object_mut().unwrap().remove("rule_path");
+        fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn shared_source_upgrade_preserves_six_items_baselines_manifests_and_backup() {
+    let tmp = tempfile::tempdir().unwrap();
+    schema_two(tmp.path());
+    let path = tmp.path().join("state.sqlite");
+    let manifest = fs::read(tmp.path().join("manifests/item0.json")).unwrap();
+    let mut db = StateDb::open(&path).unwrap();
+    assert_eq!(db.list_items().unwrap().len(), 6);
+    for item in db.list_items().unwrap() {
+        assert_eq!(item.last_sync_at, Some(200));
+        assert_eq!(
+            db.list_file_states(&item.id).unwrap()[0]
+                .local_hash
+                .as_deref(),
+            Some("abc")
+        );
+    }
+    let backup = tmp.path().join("backups/shared-source-v3/state.sqlite");
+    let before = fs::read(&backup).unwrap();
+    let saved = Connection::open(&backup).unwrap();
+    let version: i64 = saved
+        .query_row("SELECT max(version) FROM schema_migrations", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(version, 2);
+    assert_eq!(
+        fs::read(tmp.path().join("manifests/item0.json")).unwrap(),
+        manifest
+    );
+    db.insert_item(linker_core::state::NewItem {
+        id: "second",
+        name: "second",
+        item_type: "directory",
+        local_path: "/source/item0",
+        cloud_path: "/another/target",
+    })
+    .unwrap();
+    assert!(db
+        .insert_item(linker_core::state::NewItem {
+            id: "duplicate",
+            name: "duplicate",
+            item_type: "directory",
+            local_path: "/source/item0",
+            cloud_path: "/another/target",
+        })
+        .is_err());
+    drop(db);
+    for _ in 0..2 {
+        assert_eq!(StateDb::open(&path).unwrap().list_items().unwrap().len(), 7);
+        assert_eq!(fs::read(&backup).unwrap(), before);
+    }
+    let conn = Connection::open(&path).unwrap();
+    assert!(!conn
+        .prepare("PRAGMA foreign_key_check")
+        .unwrap()
+        .exists([])
+        .unwrap());
+    let version: i64 = conn
+        .query_row("SELECT max(version) FROM schema_migrations", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(version, 3);
+}
+
+#[test]
+fn shared_source_migration_transaction_rolls_back_and_can_retry() {
+    let tmp = tempfile::tempdir().unwrap();
+    schema_two(tmp.path());
+    let path = tmp.path().join("state.sqlite");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_v3 BEFORE INSERT ON schema_migrations
+        WHEN NEW.version=3 BEGIN SELECT RAISE(FAIL, 'injected migration failure'); END;",
+    )
+    .unwrap();
+    assert!(StateDb::open(&path).is_err());
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name='items'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(sql.contains("local_path TEXT NOT NULL UNIQUE"));
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM file_states", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 6);
+    assert!(tmp
+        .path()
+        .join("backups/shared-source-v3/state.sqlite")
+        .is_file());
+    conn.execute_batch("DROP TRIGGER fail_v3").unwrap();
+    assert_eq!(StateDb::open(&path).unwrap().list_items().unwrap().len(), 6);
+}
+
+#[test]
+fn shared_source_migration_refuses_symlink_backup_without_changing_database() {
+    let tmp = tempfile::tempdir().unwrap();
+    schema_two(tmp.path());
+    let path = tmp.path().join("state.sqlite");
+    let before = fs::read(&path).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::create_dir(tmp.path().join("backups")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), tmp.path().join("backups/shared-source-v3"))
+        .unwrap();
+    assert!(StateDb::open(&path).is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(outside.path().read_dir().unwrap().next().is_none());
+}
+
 #[test]
 fn read_only_preview_rejects_legacy_state_without_migrating() {
     let tmp = tempfile::tempdir().unwrap();

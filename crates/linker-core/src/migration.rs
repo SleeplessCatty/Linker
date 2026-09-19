@@ -1,4 +1,4 @@
-//! One-time, recoverable retirement of the pre-0.3 manual rule store.
+//! Backed-up, restartable migrations for retired rules and shared-source state.
 use std::fs;
 use std::path::Path;
 
@@ -55,6 +55,77 @@ fn atomic_file(path: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<(
         let _ = fs::remove_file(&temp);
     }
     result
+}
+
+/// Database schema 3 removes the source-only UNIQUE constraint. Manifests stay
+/// at schema 2 because their one-record-per-target representation is unchanged.
+/// The caller holds the migration process lock; stop older daemons on upgrade.
+pub(crate) fn upgrade_shared_sources(conn: &mut Connection, directory: &Path) -> Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='items')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(());
+    }
+    let migrated: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=3)",
+        [],
+        |row| row.get(0),
+    )?;
+    if migrated {
+        return Ok(());
+    }
+
+    safe_dir(&directory.join("backups"))?;
+    let backup = directory.join("backups/shared-source-v3");
+    safe_dir(&backup)?;
+    atomic_file(&backup.join("state.sqlite"), |temp| {
+        conn.backup(DatabaseName::Main, temp, None)?;
+        Ok(())
+    })?;
+
+    // Rebuild the parent table without renaming the old one, so references from
+    // file_states retain the correct table name. Preserve all IDs and baselines.
+    let foreign_keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+    conn.pragma_update(None, "foreign_keys", false)?;
+    let result = (|| -> Result<()> {
+        let tx = conn.transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE items_shared_source (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+                item_type TEXT NOT NULL DEFAULT 'directory', local_path TEXT NOT NULL,
+                cloud_path TEXT NOT NULL, status TEXT NOT NULL,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                last_sync_at INTEGER, last_error TEXT, UNIQUE(local_path, cloud_path)
+             );
+             INSERT INTO items_shared_source
+                SELECT id,name,item_type,local_path,cloud_path,status,created_at,updated_at,last_sync_at,last_error FROM items;
+             DROP TABLE items;
+             ALTER TABLE items_shared_source RENAME TO items;
+             CREATE INDEX items_source_path ON items(local_path);"
+        )?;
+        if tx.prepare("PRAGMA foreign_key_check")?.exists([])? {
+            return Err(std::io::Error::other(
+                "shared-source migration found broken foreign keys; database changes rolled back",
+            )
+            .into());
+        }
+        tx.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (3, ?1)",
+            [chrono::Utc::now().timestamp()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    })();
+    conn.pragma_update(None, "foreign_keys", foreign_keys)?;
+    result?;
+    eprintln!(
+        "Linker: upgraded database to schema 3 for shared sources; backup: {}",
+        backup.display()
+    );
+    Ok(())
 }
 
 pub(crate) fn upgrade(conn: &mut Connection, directory: &Path) -> Result<()> {

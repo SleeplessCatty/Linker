@@ -59,6 +59,10 @@ Result:
 
 `--name` optionally sets a unique record name independent of both folder names, for example `linker add ~/work/demo ~/Cloud/work-demo --name work-demo`. Without it, the source basename is used. Same-named source directories require different record names and separate non-overlapping targets. Validation and rollback boundaries are documented in [USAGE.md](USAGE.md#add-a-directory).
 
+### One Source, Multiple Targets
+
+Repeat `add` with the same source, a separate empty/missing target and a unique `--name`. Existing associations remain active. Each pair stays bidirectional, so target modifications/deletions can propagate through the common source to other targets. Shared-source sync operations are serialized; pairwise reconciliation may need another pass. This is not independent backup storage. `remove <name>` affects only that record. Nested source trees and target overlap remain unsupported.
+
 ### Manage Ignore Files
 
 Edit `.gitignore` in the source or target tree. Linker supports names, directory patterns, relative paths, and single-star wildcards only; advanced syntax is warned and skipped, not interpreted as Git-compatible matching. Nested rules accumulate without negation. See [USAGE.md](USAGE.md#ignore-files) for the exact subset.

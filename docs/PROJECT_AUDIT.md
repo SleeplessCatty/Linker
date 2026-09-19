@@ -26,7 +26,7 @@ Runtime state is stored outside the repository:
 - `crates/linker-core/src/rules.rs`: basic `.gitignore` path-segment matcher and warning diagnostics.
 - `crates/linker-core/src/sync.rs`: control-first planning, baseline retirement and counted target cleanup.
 - `crates/linker-core/src/tree.rs`: descriptor-relative no-follow reads/copies/deletes.
-- `crates/linker-core/src/migration.rs`: backed-up, restartable metadata migration to schema 2.
+- `crates/linker-core/src/migration.rs`: backed-up, restartable metadata migrations to database schema 3; manifests remain schema 2.
 - `crates/linker-core/src/lock.rs`: persistent per-association process lock files.
 - `crates/linker-core/examples/preview.rs`: upgrade inventory helper; use a copied database.
 - `scripts/install.sh`: local checkout installer.
@@ -48,6 +48,7 @@ Compared PRODUCT.md, SPEC.md, TASKS.md and the approved basic-.gitignore scope a
 
 | Agreed capability | Implementation / evidence |
 | --- | --- |
+| Shared source, multiple targets | Pairwise baselines and source locks; CLI fan-out/propagation/rollback tests, daemon startup/live multi-target event tests, schema-3 migration tests |
 | Add exact target and custom record name | `add_safety.rs`: destination contents/types, names, overlap, permissions, concurrent processes and rollback after partial copies |
 | Add/list/status/doctor/remove/delete | CLI integration tests; table covers multiple/empty items and Unicode/control characters |
 | Basic in-tree ignore subset and control-first sync | `rules.rs`, `sync.rs`; matching, warnings, nested rules, target-only cleanup and reinclusion tests |
@@ -63,6 +64,7 @@ The requested CLI additions have implementation and test coverage. A separately 
 
 ## Known Defects and Risks
 
+- Shared targets are bidirectionally connected through their source. Edits and ordinary deletions can spread to other targets; convergence is pairwise, not atomic. Old daemons lack shared-source locking and must be stopped before upgrading both binaries.
 - `delete` removes the target before unregistering. Partial target-removal failure retains registration/baselines; later daemon sync can propagate missing target files to the source. Stop the daemon and inspect both trees before recovery. The new `add` rollback does not fix this separate deletion path.
 - The exact-target `add` interface is incompatible with old parent-directory arguments. Existing records are unchanged; retained nonempty targets cannot be re-added. `add` rollback handles caught failures, not process termination or all external-writer races.
 
@@ -81,7 +83,7 @@ The requested CLI additions have implementation and test coverage. A separately 
 
 ## Verification Status
 
-Local verification on 2026-09-19: 74 Rust tests passed (3 output-unit, 20 CLI integration, 19 add-safety integration, 6 core-unit, 16 sync integration, 6 migration, 4 daemon integration). Format, strict Clippy, compile/release build, Shell regressions and packaging syntax checks passed. This is local evidence; it does not claim that a remote CI run or GitHub release occurred. Add tests use isolated temporary state and directories; live associations are not modified. Permission checks require a non-root test user.
+Local verification on 2026-09-19: 88 Rust tests passed (3 output-unit, 20 CLI integration, 26 add-safety integration, 6 core-unit, 17 sync integration, 9 migration, 1 daemon-unit, 6 daemon integration). Format, strict Clippy, compile/release build, Shell regressions and packaging syntax checks passed. This is local evidence; it does not claim that a remote CI run or GitHub release occurred. Add tests use isolated temporary state and directories; live associations are not modified. Permission checks require a non-root test user.
 
 ```bash
 cargo fmt --all --check

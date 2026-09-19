@@ -30,7 +30,7 @@ struct Cli {
 enum Command {
     #[command(about = "Add a source directory to Linker")]
     #[command(
-        long_about = "Use the exact target directory; no source name is appended. Create it if absent, or use it only if completely empty (including hidden entries). Nonempty targets, target symlinks and overlapping sync paths are rejected. --name changes only the association name, not either directory. Initial sync copies from source; later sync is bidirectional.\n\nOnly .gitignore files inside the association control exclusions. Supported: names, directories, relative paths and single-star wildcards. Unsupported patterns warn and are skipped. Ignored source files are kept; matching target files are deleted. Active .gitignore control files remain synchronized."
+        long_about = "Use the exact target directory; no source name is appended. Create it if absent, or use it only if completely empty (including hidden entries). The same source directory may have multiple targets with unique --name values. Targets must be separate; nested source trees and source/target overlaps are rejected, as are nonempty targets and target symlinks. --name changes only the association name, not either directory. Initial sync copies from source; later sync is bidirectional.\n\nOnly .gitignore files inside the association control exclusions. Supported: names, directories, relative paths and single-star wildcards. Unsupported patterns warn and are skipped. Ignored source files are kept; matching target files are deleted. Active .gitignore control files remain synchronized."
     )]
     Add {
         #[arg(help = "Source directory to sync")]
@@ -284,7 +284,7 @@ fn format_error(error: &LinkerError) -> String {
             "error: invalid item name: {name:?}\nhelp: use --name with 1-250 UTF-8 bytes, no path separators, control characters or surrounding whitespace; `.`, `..` and `.linker` are reserved."
         ),
         LinkerError::InvalidAssociation(message) => format!(
-            "error: invalid sync association: {message}\nhelp: choose separate source and target directories, outside existing associations and Linker's application state."
+            "error: invalid sync association: {message}\nhelp: choose separate source and target directories, outside Linker's application state; exact source reuse is allowed, but targets and nested source trees must not overlap."
         ),
         _ => format!("error: {error}"),
     }

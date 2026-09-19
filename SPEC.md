@@ -89,11 +89,11 @@ Command responsibilities:
 
 ## Add Registration Safety
 
-Resolve the source and existing target ancestors before creating directories. Reject nonempty targets (including hidden entries), non-directory targets, final target symlinks, containment between the two sides, overlap with registered source/target trees, and overlap with app state. Names are checked for invalid path/control characters, outer whitespace, reserved names, length, ASCII case collisions and aliases of existing IDs; orphan manifests are not overwritten.
+Resolve the source and existing target ancestors before creating directories. Reject nonempty targets (including hidden entries), non-directory targets, final target symlinks, containment between the two sides, overlap with registered source/target trees except exact directory-source reuse, and overlap with app state. Names are checked for invalid path/control characters, outer whitespace, reserved names, length, ASCII case collisions and aliases of existing IDs; orphan manifests are not overwritten.
 
-The persistent add-registry process lock covers duplicate/overlap checks, publication and initial sync. Create missing directories with descriptor-relative no-follow traversal; revalidate roots and target emptiness before publication. The per-item lock is held before publishing the new item and until success or rollback, so a daemon cannot sync an incomplete registration. Initial planning verifies an empty target and rejects reverse copies or target cleanup; per-operation checks detect changed files.
+The persistent add-registry process lock covers duplicate/overlap checks, publication and initial sync. Create missing directories with descriptor-relative no-follow traversal; revalidate roots and target emptiness before publication. The per-item lock followed by a shared canonical-source lock is held before publishing the new item and until success or rollback, so a daemon cannot sync an incomplete registration. Initial planning verifies an empty target and rejects reverse copies or target cleanup; per-operation checks detect changed files.
 
-On a caught registration/initial-sync error, transactionally remove this new ID and its baselines, then remove its owned manifest. Keep source files and any partial target copies; report rollback failures explicitly. This does not promise crash-atomicity or exclusion of external filesystem writers. Existing stored paths/names and schema 2 do not change. See [USAGE.md](USAGE.md#add-a-directory) for the breaking positional-argument change.
+On a caught registration/initial-sync error, transactionally remove this new ID and its baselines, then remove its owned manifest. Keep source files and any partial target copies; report rollback failures explicitly. This does not promise crash-atomicity or exclusion of external filesystem writers. Existing stored paths/names and schema-2 manifests do not change. Database schema 3 permits repeated source paths. See [USAGE.md](USAGE.md#add-a-directory) for the breaking positional-argument change.
 
 ## Manifest
 
@@ -133,19 +133,29 @@ CREATE TABLE items (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     item_type TEXT NOT NULL DEFAULT 'directory',
-    local_path TEXT NOT NULL UNIQUE,
+    local_path TEXT NOT NULL,
     cloud_path TEXT NOT NULL,
     status TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     last_sync_at INTEGER,
-    last_error TEXT
+    last_error TEXT,
+    UNIQUE(local_path, cloud_path)
 );
+CREATE INDEX items_source_path ON items(local_path);
 ```
 
 The internal column names still use `local_path` and `cloud_path` for compatibility. User-facing behavior treats them as source and target paths.
 
 The database also stores per-file sync state. Schema 2 removes `exclude_rules` and `items.rule_path`. Opening schema 1 takes a migration lock, backs up SQLite plus owned manifests/rule snapshots to `backups/gitignore-v2`, then migrates transactionally. Filesystem completion is restartable; only known snapshots whose content equals the backup are removed. Unknown files are left alone. Associations and file states remain intact, and old rules are not applied.
+
+### Shared-source storage and scheduling
+
+Schema 3 backs up SQLite to `backups/shared-source-v3/state.sqlite` before transactionally rebuilding `items` without source-only uniqueness. Names and source/target pairs remain unique. Preserve IDs, timestamps, errors and all `file_states`; check foreign keys before commit. The migration process lock serializes upgrades. Failed transactions leave schema 2 intact and are retryable; a committed version marker prevents overwriting the original backup on later opens. Manifest schema remains 2.
+
+New registrations allow exact canonical directory-source equality only; source containment, all target overlap and source/target cross-role overlap remain forbidden. Each association owns its baseline, so removing or rolling back one association does not retire another's state. Acquisition order is add-registry (registration only), item, then canonical stored source path. Initial sync, regular sync, preview, remove and delete use the source lock; unrelated sources do not share it.
+
+A shared source connects independent bidirectional pairs. Edits, ordinary deletions and controls can propagate from one target through the source to other targets. Preserve existing per-pair conflict/deletion semantics; all-item sync follows name order and may require a further pass for convergence. No all-target atomic snapshot or immediate fan-out on a single named sync is promised. The daemon maps each watched root to a set of item IDs: a source event marks every associated target dirty, while a target event initially marks its own record; source writes then generate follow-up source events. Old daemons lack source locks and event fan-out and must be stopped before upgrade.
 
 ## Rule Engine
 

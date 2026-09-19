@@ -64,13 +64,31 @@ linker sync work-notes
 - The source must be an existing directory. Both arguments are required; paths with spaces must be quoted or shell-escaped. Relative paths and `~` are supported.
 - The target must be missing or a completely empty directory. **Every entry counts**, including `.DS_Store`, `.gitignore`, ignored files, empty subdirectories, and broken symlinks. A nonempty target fails with its path and a reason; Linker does not merge, clear, or overwrite existing contents to make it acceptable.
 - A target that is a regular file or a symbolic link is rejected. Existing ancestor symlinks are resolved before checking separation; creating missing directories does not follow ancestors replaced by symlinks.
-- Source and target must be separate: neither may contain the other. Neither path may overlap either side of an existing association, or Linker's Application Support directory.
+- Source and target must be separate: neither may contain the other. Exactly the same canonical source directory may be reused with a different target and unique name. Nested source trees are still rejected; targets cannot equal, contain, or be inside any source or target tree. Neither side may overlap Linker's Application Support directory.
 - New record names must be unique (ASCII case-insensitive) and must not alias an existing record ID. Names allow Unicode and internal spaces, but not leading/trailing whitespace, control characters, `/`, `\`, `.`, `..`, or reserved `.linker`. The maximum is 250 UTF-8 bytes. Existing orphan manifests are not overwritten.
-- Registration checks are serialized across processes. A new item lock prevents the daemon from syncing while initial sync or rollback is in progress. Initial sync only copies source files to the empty target, applying source `.gitignore` rules; it cannot copy back to or delete the source. Later sync is bidirectional.
+- Registration checks are serialized across processes. Item and shared-source locks prevent conflicting daemon/CLI operations during initial sync or rollback. Initial sync only copies source files to the empty target, applying source `.gitignore` rules; it cannot copy back to or delete the source. Later sync is bidirectional.
 - Validation failures occur before creating target directories or registering the item. State setup/migration and lock files can still be created during registry checks. Once directory creation/initial sync begins, I/O failures can leave created directories or copied files. A caught initial-sync failure removes the new association, its baselines and manifest; it **keeps** the source and partial target copies. Rollback failures are explicitly reported. Inspect those copies before choosing an empty target for retry.
 - This is not crash-atomic filesystem storage. Process termination, disk failure, or an external writer racing with `add` can require manual inspection; registration locks coordinate Linker processes, not iCloud or other applications.
 
 **Breaking CLI change:** old commands that supplied a target parent must append the desired folder explicitly. A nonempty parent now fails; an empty parent is treated as the exact target, not automatically corrected. Existing stored associations are unchanged. Re-adding a removed association to its retained nonempty target is intentionally rejected; there is no force/merge option.
+
+## One Source, Multiple Targets
+
+Keep an existing association and add a second target with another name; no `remove` is needed:
+
+```bash
+linker add /Users/jason/learn /Users/jason/Documents/learn --name learn
+linker add /Users/jason/learn "/Users/jason/Library/Mobile Documents/iCloud~md~obsidian/Documents/learn" --name learn-ob
+```
+
+If `learn` already exists, run only the second command. Inside double quotes, spaces and these embedded tildes need **no backslashes**. Each target must be missing or empty. Each `add` still takes one target; repeat it for more targets. Duplicate source/target pairs are rejected even with a different name.
+
+- Each association has its own name, target, manifest and file baseline. The canonical source directory can be identical; merely nested source directories are not allowed. Symbolic-link aliases resolving to the same source use the same canonical path and lock.
+- Sync remains **bidirectional**, not isolated backups. A target edit or ordinary deletion can reach the shared source and then other targets. `.gitignore` controls likewise propagate through the source; ignored-source retention still applies.
+- `sync learn-ob` processes that association only. Other targets catch up when their daemon/manual passes run. `sync` processes associations in name order; conflicting target edits may need another pass to converge. Each pair keeps the newer-mtime/source-on-tie rule; this is not a single atomic multi-target transaction or global conflict election.
+- Shared-source operations take an item lock followed by the same source-path lock. Separate CLI/daemon processes cannot simultaneously sync or preview the shared source. Unrelated sources remain independent. External filesystem editors are not locked.
+- `remove learn-ob` unregisters only that association and keeps all directories; `learn` continues working. A successful `delete learn-ob` also removes only its target. The known partial-delete failure risk below remains; with shared sources it can affect other targets too.
+- Database schema 3 preserves existing associations and baselines while permitting repeated source paths. Manifests remain schema 2. Stop the old daemon and update both programs together; see [INSTALL.md](INSTALL.md#shared-source-database-upgrade).
 
 ## Ignore Files
 

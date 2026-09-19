@@ -90,6 +90,103 @@ fn daemon_once_syncs_existing_item() {
     assert_eq!(read_file(&sandbox.item_dir().join("daemon.txt")), "daemon");
 }
 
+#[test]
+fn daemon_once_syncs_each_target_of_shared_source() {
+    let sandbox = Sandbox::new();
+    write_file(&sandbox.source.join("initial.txt"), "initial");
+    seed(&sandbox);
+    let second = sandbox.target_parent.join("other-name");
+    fs::create_dir(&second).unwrap();
+    let mut db = StateDb::open(&sandbox.app_support.join("state.sqlite")).unwrap();
+    db.insert_item(NewItem {
+        id: "second",
+        name: "second",
+        item_type: "directory",
+        local_path: sandbox.source.to_str().unwrap(),
+        cloud_path: second.to_str().unwrap(),
+    })
+    .unwrap();
+    write_file(&sandbox.source.join("new.txt"), "both targets");
+    sandbox
+        .linkerd()
+        .arg("--once")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("startup synced demo"))
+        .stderr(predicates::str::contains("startup synced second"));
+    assert_eq!(
+        read_file(&sandbox.item_dir().join("new.txt")),
+        "both targets"
+    );
+    assert_eq!(read_file(&second.join("new.txt")), "both targets");
+}
+
+#[test]
+fn running_daemon_fans_source_events_out_to_all_targets() {
+    use std::process::{Child, Stdio};
+    use std::time::{Duration, Instant};
+    struct Running(Child);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    fn wait_for(mut check: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !check() {
+            assert!(
+                Instant::now() < deadline,
+                "multi-target daemon event did not complete"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    let sandbox = Sandbox::new();
+    seed(&sandbox);
+    let second = sandbox.target_parent.join("other-name");
+    fs::create_dir(&second).unwrap();
+    let mut db = StateDb::open(&sandbox.app_support.join("state.sqlite")).unwrap();
+    db.insert_item(NewItem {
+        id: "second",
+        name: "second",
+        item_type: "directory",
+        local_path: sandbox.source.to_str().unwrap(),
+        cloud_path: second.to_str().unwrap(),
+    })
+    .unwrap();
+    let log = sandbox._tmp.path().join("multi-target-daemon.log");
+    let child = sandbox
+        .linkerd()
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let _running = Running(child);
+    wait_for(|| {
+        fs::read_to_string(&log)
+            .unwrap()
+            .contains("startup synced second")
+    });
+    write_file(&sandbox.source.join("from-source.txt"), "fan out");
+    wait_for(|| {
+        [&sandbox.item_dir(), &second].iter().all(|target| {
+            fs::read_to_string(target.join("from-source.txt")).is_ok_and(|value| value == "fan out")
+        })
+    });
+    write_file(&second.join("from-target.txt"), "back through source");
+    wait_for(|| {
+        [&sandbox.source, &sandbox.item_dir()].iter().all(|target| {
+            fs::read_to_string(target.join("from-target.txt"))
+                .is_ok_and(|value| value == "back through source")
+        })
+    });
+    let output = fs::read_to_string(log).unwrap();
+    assert!(output.contains("event synced demo"));
+    assert!(output.contains("event synced second"));
+    assert!(!output.contains("failed to sync"));
+}
+
 fn write_file(path: &Path, contents: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("parent");

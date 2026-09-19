@@ -17,9 +17,17 @@ This metadata backup does **not** back up user files or old binaries. Before ins
 
 User `.gitignore` text is never automatically rewritten. Unsupported patterns warn and are skipped; valid patterns can remove target copies that an unsupported negation previously protected. Review [USAGE.md](USAGE.md#ignore-files) before enabling the new daemon. Version 0.3.0 does not publish a GitHub Release in this change.
 
+## Shared-source Database Upgrade
+
+This checkout upgrades the **database to schema 3** to allow the same source directory in multiple associations. Manifest files remain schema 2. Existing names, IDs, source/target paths, errors, timestamps and file baselines are preserved. A transaction rebuilds the association table; the original database is backed up first under `~/Library/Application Support/Linker/backups/shared-source-v3/state.sqlite`. Reopening completed state does not repeat or overwrite that backup. Failed database transactions can be retried.
+
+Before enabling this change, stop the old daemon, back up all application state and both binaries outside sync trees, then install **both** `linker` and `linkerd` using the update procedure below. Do not run a new CLI against an old daemon: older daemons do not take shared-source locks. Do not downgrade only the binaries once multiple targets exist; stop the new service and restore the complete prior state/binary/plist backup if rollback is required. The automatic database backup does not contain manifests, binaries or user data.
+
+After installation, verify existing records and `doctor`; add each additional target with a unique `--name` without removing the first record. New targets still must be empty/missing. On schema-2 state, new-code `sync --dry-run` remains read-only and does not trigger this migration; ordinary state-opening commands perform it. Build/tests alone do not update the installed programs or migrate live state.
+
 ## Exact-target and optional-name CLI update
 
-New adds use `linker add <source-directory> <target-directory> [--name <name>]`. Update scripts that passed a parent directory: include the final desired directory name. Nonempty destinations now fail; an empty old parent would become the exact destination. Existing schema-2 associations keep their stored names, paths and baselines; do not remove/re-add them for this update. No schema migration or GitHub Release is required for this CLI change. Installation is a separate explicit operation from building/testing the checkout.
+New adds use `linker add <source-directory> <target-directory> [--name <name>]`. Update scripts that passed a parent directory: include the final desired directory name. Nonempty destinations now fail; an empty old parent would become the exact destination. Existing schema-2 associations keep their stored names, paths and baselines; do not remove/re-add them for this update. That original CLI-only change required no schema migration; the subsequent shared-source feature requires the database upgrade above. No GitHub Release is published. Installation is a separate explicit operation from building/testing the checkout.
 
 ## Historical Pre-0.2 Clean Cutover
 
@@ -82,7 +90,7 @@ For an installation with working command links, update from the intended local c
 4. Run `./scripts/install.sh --no-link`. This rebuilds and replaces **both** `linker` and `linkerd`, writes the plist and restarts the service. Existing `/usr/local/bin` symlinks continue to work; `--no-link` does not remove them and no new PATH entry is needed.
 5. Verify `linker --version`, `linker add --help` (exact target and `--name`), `linker list`, `linker doctor`, `linker sync --dry-run`, and `launchctl print gui/$(id -u)/com.linker.linkerd`. The version remains 0.3.0 for this checkout update, so the version string alone does not identify the new CLI behavior.
 
-This preserves schema-2 associations and file state. Keep the backup until verification is complete. If installation fails, stop any newly started daemon before restoring the saved binaries/state/plist and restarting the previous service. Updating the binaries is separate from committing or pushing repository changes; it does not create a GitHub Release.
+This preserves existing associations and file state, migrating the database as described above. Keep the backup until verification is complete. If installation fails, stop any newly started daemon before restoring the saved binaries/state/plist and restarting the previous service. Updating the binaries is separate from committing or pushing repository changes; it does not create a GitHub Release.
 
 ## Remote Script Install
 

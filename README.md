@@ -27,6 +27,15 @@ linker add ~/work/Notes ~/Cloud/WorkNotes --name work-notes
 linker add ~/personal/Notes ~/Cloud/PersonalNotes --name personal-notes
 ```
 
+The same source can also have multiple targets, each with a unique record name:
+
+```bash
+linker add ~/learn ~/Documents/learn --name learn-local
+linker add ~/learn "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/learn" --name learn-ob
+```
+
+These are bidirectional associations: target edits and deletions can travel through the shared source to other targets. Shared-source operations are serialized; convergence can require another pass. See [multi-target behavior](USAGE.md#one-source-multiple-targets).
+
 Existing nonempty destinations fail without merging or deleting their contents, including hidden files or empty subdirectories. See [add safety and failure behavior](USAGE.md#add-a-directory). Existing associations keep their stored paths and names.
 
 Linker metadata is stored locally under:

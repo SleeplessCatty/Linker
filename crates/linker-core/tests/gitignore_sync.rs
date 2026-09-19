@@ -369,6 +369,61 @@ fn item_lock_serializes_independent_database_connections() {
 }
 
 #[test]
+fn shared_source_lock_blocks_other_item_sync_and_preview_but_not_unrelated_sources() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    for preview in [false, true] {
+        let mut f = Fixture::new();
+        let second_target = f._tmp.path().join("second");
+        fs::create_dir(&second_target).unwrap();
+        f.db.insert_item(NewItem {
+            id: "second",
+            name: "second",
+            item_type: "directory",
+            local_path: f.local.to_str().unwrap(),
+            cloud_path: second_target.to_str().unwrap(),
+        })
+        .unwrap();
+        write(&f.local.join("a"), "one", 100);
+        let guard = f.db.lock_source(&f.item.local_path).unwrap();
+        let path = f.db_path.clone();
+        let (tx, rx) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let db = StateDb::open(&path).unwrap();
+            let item = db.get_item("second").unwrap();
+            tx.send("ready").unwrap();
+            if preview {
+                preview_item(&db, &item).unwrap();
+            } else {
+                sync_item(&db, &item).unwrap();
+            }
+            tx.send("done").unwrap();
+        });
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "ready");
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
+        assert!(!second_target.join("a").exists());
+        let unrelated_local = f._tmp.path().join("unrelated-source");
+        let unrelated_cloud = f._tmp.path().join("unrelated-target");
+        write(&unrelated_local.join("b"), "independent", 100);
+        fs::create_dir(&unrelated_cloud).unwrap();
+        f.db.insert_item(NewItem {
+            id: "unrelated",
+            name: "unrelated",
+            item_type: "directory",
+            local_path: unrelated_local.to_str().unwrap(),
+            cloud_path: unrelated_cloud.to_str().unwrap(),
+        })
+        .unwrap();
+        sync_item(&f.db, &f.db.get_item("unrelated").unwrap()).unwrap();
+        assert!(unrelated_cloud.join("b").exists());
+        drop(guard);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "done");
+        handle.join().unwrap();
+        assert_eq!(second_target.join("a").exists(), !preview);
+    }
+}
+
+#[test]
 fn existing_single_file_associations_continue_syncing() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source/note");

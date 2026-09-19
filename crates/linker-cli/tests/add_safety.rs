@@ -283,8 +283,9 @@ fn rejects_overlap_with_any_existing_association_or_application_state() {
     let target = f.path("target");
     f.add(&first, &target, Some("first")).assert().success();
     let second = f.source("second");
+    fs::create_dir(first.join("child")).unwrap();
     for (source, destination) in [
-        (first.clone(), f.path("another")),
+        (first.join("child"), f.path("another")),
         (target.clone(), f.path("another")),
         (second.clone(), first.join("nested")),
         (second.clone(), target.join("nested")),
@@ -301,6 +302,230 @@ fn rejects_overlap_with_any_existing_association_or_application_state() {
     assert!(!first.join("nested").exists());
     assert!(!target.join("nested").exists());
     assert!(!f.state.join("nested").exists());
+}
+
+#[test]
+fn shared_source_supports_distinct_targets_and_independent_removal_and_delete() {
+    let f = Fixture::new();
+    let source = f.source("learn");
+    let one = f.path("local-learn");
+    let two = f.path("cloud-learn");
+    f.add(&source, &one, None).assert().success();
+    let alias = f.path("learn-alias");
+    std::os::unix::fs::symlink(&source, &alias).unwrap();
+    f.add(&alias, &two, Some("learn-ob")).assert().success();
+    assert_eq!(f.count(), 2);
+    for path in [&one, &two] {
+        assert_eq!(fs::read_to_string(path.join("keep.txt")).unwrap(), "learn");
+    }
+    f.cli().args(["remove", "learn-ob"]).assert().success();
+    assert_eq!(f.count(), 1);
+    fs::write(source.join("new.txt"), "new").unwrap();
+    f.cli().args(["sync", "learn"]).assert().success();
+    assert!(one.join("new.txt").exists());
+    assert!(!two.join("new.txt").exists());
+    assert!(two.join("keep.txt").exists());
+    let three = f.path("third");
+    f.add(&source, &three, Some("third")).assert().success();
+    f.cli().args(["delete", "learn"]).assert().success();
+    assert_eq!(f.count(), 1);
+    assert!(!one.exists());
+    assert!(source.join("keep.txt").exists());
+    assert!(three.join("keep.txt").exists());
+    f.cli()
+        .args(["sync", "third", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(contains("no changes"));
+}
+
+#[test]
+fn target_changes_and_deletions_propagate_via_shared_source() {
+    let f = Fixture::new();
+    let source = f.source("learn");
+    let one = f.path("one");
+    let two = f.path("two");
+    f.add(&source, &one, Some("a")).assert().success();
+    f.add(&source, &two, Some("b")).assert().success();
+    fs::write(one.join("from-a.txt"), "from target a").unwrap();
+    f.cli().args(["sync", "a"]).assert().success();
+    f.cli().args(["sync", "b"]).assert().success();
+    assert_eq!(
+        fs::read_to_string(two.join("from-a.txt")).unwrap(),
+        "from target a"
+    );
+    fs::remove_file(two.join("keep.txt")).unwrap();
+    f.cli().args(["sync", "b"]).assert().success();
+    assert!(!source.join("keep.txt").exists());
+    f.cli().args(["sync", "a"]).assert().success();
+    assert!(!one.join("keep.txt").exists());
+    f.cli()
+        .args(["sync", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(contains("no changes"));
+}
+
+#[test]
+fn shared_source_ignore_cleanup_and_reinclusion_preserve_source() {
+    let f = Fixture::new();
+    let source = f.source("source");
+    fs::write(source.join("keep.log"), "never delete source").unwrap();
+    let targets = [f.path("one"), f.path("two")];
+    for (target, name) in targets.iter().zip(["one", "two"]) {
+        f.add(&source, target, Some(name)).assert().success();
+    }
+    fs::write(source.join(".gitignore"), "*.log\n").unwrap();
+    f.cli().arg("sync").assert().success();
+    assert!(targets
+        .iter()
+        .all(|target| !target.join("keep.log").exists()));
+    assert_eq!(
+        fs::read_to_string(source.join("keep.log")).unwrap(),
+        "never delete source"
+    );
+    fs::remove_file(source.join(".gitignore")).unwrap();
+    f.cli().arg("sync").assert().success();
+    for target in &targets {
+        assert_eq!(
+            fs::read_to_string(target.join("keep.log")).unwrap(),
+            "never delete source"
+        );
+    }
+    f.cli()
+        .args(["sync", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(contains("no changes"));
+}
+
+#[test]
+fn shared_source_conflicts_converge_by_mtime_over_successive_pair_syncs() {
+    let f = Fixture::new();
+    let source = f.source("source");
+    filetime::set_file_mtime(
+        source.join("keep.txt"),
+        filetime::FileTime::from_unix_time(100, 0),
+    )
+    .unwrap();
+    let one = f.path("one");
+    let two = f.path("two");
+    f.add(&source, &one, Some("one")).assert().success();
+    f.add(&source, &two, Some("two")).assert().success();
+    fs::write(one.join("keep.txt"), "older target edit").unwrap();
+    filetime::set_file_mtime(
+        one.join("keep.txt"),
+        filetime::FileTime::from_unix_time(200, 0),
+    )
+    .unwrap();
+    fs::write(two.join("keep.txt"), "newer target edit").unwrap();
+    filetime::set_file_mtime(
+        two.join("keep.txt"),
+        filetime::FileTime::from_unix_time(300, 0),
+    )
+    .unwrap();
+    f.cli().arg("sync").assert().success();
+    f.cli().arg("sync").assert().success();
+    for path in [&source, &one, &two] {
+        assert_eq!(
+            fs::read_to_string(path.join("keep.txt")).unwrap(),
+            "newer target edit"
+        );
+    }
+}
+
+#[test]
+fn shared_source_keeps_name_target_and_cross_role_overlap_protection() {
+    let f = Fixture::new();
+    let source = f.path("source");
+    let target = f.path("target");
+    fs::create_dir(&source).unwrap();
+    f.add(&source, &target, Some("first")).assert().success();
+    f.add(&source, &f.path("other"), Some("first"))
+        .assert()
+        .failure()
+        .stderr(contains("item already exists"));
+    for (src, dest) in [
+        (source.clone(), target.clone()),
+        (source.clone(), target.join("nested")),
+        (target.clone(), f.path("other")),
+        (source.clone(), source.join("nested")),
+    ] {
+        f.add(&src, &dest, Some("second"))
+            .assert()
+            .failure()
+            .stderr(contains("invalid sync association"));
+    }
+    assert_eq!(f.count(), 1);
+    assert!(!f.path("other").exists());
+}
+
+#[test]
+fn concurrent_adds_of_shared_source_to_separate_targets_both_succeed() {
+    let f = Fixture::new();
+    let source = f.source("source");
+    let mut children = Vec::new();
+    for name in ["one", "two"] {
+        children.push(
+            f.add(&source, &f.path(name), Some(name))
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+    }
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_eq!(f.count(), 2);
+    for name in ["one", "two"] {
+        assert_eq!(
+            fs::read_to_string(f.path(name).join("keep.txt")).unwrap(),
+            "source"
+        );
+    }
+}
+
+#[test]
+fn failed_shared_source_add_preserves_existing_item_and_baselines() {
+    let f = Fixture::new();
+    let source = f.source("source");
+    f.add(&source, &f.path("one"), Some("one"))
+        .assert()
+        .success();
+    let conn = Connection::open(f.state.join("state.sqlite")).unwrap();
+    let before: String = conn
+        .query_row("SELECT group_concat(id) FROM file_states", [], |r| r.get(0))
+        .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER reject_second BEFORE INSERT ON file_states
+        WHEN NEW.item_id != (SELECT id FROM items WHERE name='one')
+        BEGIN SELECT RAISE(FAIL, 'injected second-target failure'); END;",
+    )
+    .unwrap();
+    f.add(&source, &f.path("two"), Some("two"))
+        .assert()
+        .failure()
+        .stderr(contains("new association removed"));
+    assert_eq!(f.count(), 1);
+    let after: String = conn
+        .query_row("SELECT group_concat(id) FROM file_states", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(before, after);
+    assert!(source.join("keep.txt").exists());
+    assert!(f.path("one/keep.txt").exists());
+    assert!(f.state.join("manifests/one.json").exists());
+    assert!(!f.state.join("manifests/two.json").exists());
+    f.cli()
+        .args(["sync", "one", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(contains("no changes"));
 }
 
 #[test]

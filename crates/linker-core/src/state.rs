@@ -82,6 +82,7 @@ impl StateDb {
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
         crate::migration::upgrade(&mut conn, &directory)?;
+        crate::migration::upgrade_shared_sources(&mut conn, &directory)?;
         let db = Self { conn, directory };
         db.migrate()?;
         Ok(db)
@@ -99,14 +100,17 @@ impl StateDb {
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
                 item_type TEXT NOT NULL DEFAULT 'directory',
-                local_path TEXT NOT NULL UNIQUE,
+                local_path TEXT NOT NULL,
                 cloud_path TEXT NOT NULL,
                 status TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 last_sync_at INTEGER,
-                last_error TEXT
+                last_error TEXT,
+                UNIQUE(local_path, cloud_path)
             );
+
+            CREATE INDEX IF NOT EXISTS items_source_path ON items(local_path);
 
             CREATE TABLE IF NOT EXISTS file_states (
                 id TEXT PRIMARY KEY,
@@ -134,6 +138,10 @@ impl StateDb {
         }
         self.conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, ?1)",
+            [Utc::now().timestamp()],
+        )?;
+        self.conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, ?1)",
             [Utc::now().timestamp()],
         )?;
         Ok(())
@@ -249,6 +257,12 @@ impl StateDb {
 
     pub fn lock_item(&self, id: &str) -> Result<File> {
         crate::lock::acquire(&self.directory.join("locks"), &format!("item:{id}"))
+    }
+
+    /// Call after the item lock. All writers/previews sharing the canonical
+    /// stored source path serialize, while unrelated sources remain independent.
+    pub fn lock_source(&self, source: &str) -> Result<File> {
+        crate::lock::acquire(&self.directory.join("locks"), &format!("source:{source}"))
     }
 
     pub(crate) fn lock_add(&self) -> Result<File> {
